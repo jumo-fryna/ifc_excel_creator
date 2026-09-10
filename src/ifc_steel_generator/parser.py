@@ -54,14 +54,18 @@ class IfcParser:
 
     def _extract(self, element: object, units: UnitConverter) -> SteelElement:
         ifc_type = str(element.is_a())
+        props = flattened_properties(element)
         profile_name = extract_profile_name(element)
         fallback = next((str(v) for v in (
             getattr(element, "Name", None), getattr(element, "ObjectType", None),
             getattr(element, "Tag", None),
         ) if v), "")
-        designation = profile_name or fallback
+        property_profile = props.get("profile")
+        # Some IFC2x3 steel exporters store the authoritative fabrication
+        # profile in a property set while Name/ProfileName describes a cut or
+        # auxiliary geometry. Prefer that explicit fabrication property.
+        designation = (str(property_profile) if property_profile else profile_name) or fallback
         kind = classify_element(ifc_type, designation, bool(profile_name))
-        props = flattened_properties(element)
         plate_dims = parse_plate_designation(designation)
         thickness = number(props, "thickness")
         item = SteelElement(
@@ -80,4 +84,3 @@ class IfcParser:
             item.thickness_mm = units.length_mm(thickness) if thickness is not None else plate_dims.thickness_mm
             item.nominal_width_mm = plate_dims.width_mm
         return item
-
