@@ -10,7 +10,8 @@ Lokalna aplikacja Windows tworząca osobne zestawienie Excel dla każdego modelu
 2. Uruchom aplikację (Python nie jest potrzebny).
 3. Przeciągnij jeden lub więcej plików `.ifc` na okno.
 4. Wybierz folder wynikowy i kliknij **GENERUJ ZESTAWIENIA**.
-5. Dla każdego IFC powstanie osobny plik `.xlsx`.
+5. Dla każdego IFC program osobno pokaże wykryte fazy. Wybierz jedną fazę albo **Wszystkie fazy**.
+6. Dla każdego IFC powstanie osobny plik `<nazwa IFC> lista profili analiza.xlsx`.
 
 ## Arkusze raportu
 
@@ -20,7 +21,9 @@ Lokalna aplikacja Windows tworząca osobne zestawienie Excel dla każdego modelu
 - `DANE_PROFILE` – jeden wiersz na każdy fizyczny profil.
 - `DANE_BLACHY` – jeden wiersz na każdą fizyczną blachę.
 
-Program preferuje `NetWeight` zapisane w IFC dla profili. Gdy go brakuje, używa `NetVolume × gęstość`. Masa blach zawsze wynika z `NetVolume × gęstość`, dzięki czemu otwory i wycięcia są uwzględnione. Domyślna gęstość stali wynosi **7850 kg/m³** i można ją zmienić w oknie aplikacji.
+Program odczytuje oznaczenia także z `ObjectType` i `Description`, ponieważ część eksporterów zapisuje profile i blachy jako `IfcDiscreteAccessory`, `IfcBeam` albo `IfcMember`. Oznaczenia `PL…` i `BL…` są klasyfikowane jako blachy niezależnie od klasy IFC.
+
+Dla profili program stosuje masę jednostkową `[kg/m]` z wbudowanych tablic przekrojów (m.in. IPE, HEA, HEB, HEM, UNP, kątowniki i profile zamknięte). Jeśli przekroju nie ma w tabeli, używa masy z IFC, a następnie geometrii. Dla blach preferuje dokładne `WeightNet` z IFC; przy jego braku oblicza masę z geometrii bryły przed odjęciem otworów. Domyślna gęstość stali wynosi **7850 kg/m³** i można ją zmienić w oknie aplikacji.
 
 Program nie zgaduje gatunku, grubości ani wymiarów. Niepewne wartości pozostają puste i są rejestrowane jako ostrzeżenia.
 
@@ -63,6 +66,7 @@ Gotowy plik znajduje się w `dist\IFC_Steel_List_Generator.exe`. GitHub Actions 
 - Wynik zależy od ilości i materiałów faktycznie zapisanych przez program eksportujący IFC.
 - Obsługiwane są typowe modele IFC2x3 i IFC4; nietypowe własne właściwości mogą wymagać rozszerzenia aliasów.
 - Element bez reprezentacji geometrycznej nie jest liczony jako część fizyczna.
+- Faza nie jest zgadywana z nazwy pliku. Program wykrywa wartości `Phase` i pyta o zakres osobno dla każdego pliku przy każdym generowaniu.
 - Nierozpoznane elementy są pomijane w zestawieniu i zapisywane w logu.
 - Grubość oznaczenia `D35` pozostaje pusta, jeśli IFC nie zawiera wiarygodnej właściwości grubości.
 
@@ -71,4 +75,3 @@ Log diagnostyczny: `%USERPROFILE%\IFC Steel List Generator\logs\ifc_steel_genera
 ## Prywatność i uwierzytelnianie
 
 Aplikacja nie posiada kont użytkowników, nie wymaga logowania i nie przechowuje haseł ani tokenów. GitHub Actions korzysta wyłącznie z krótkotrwałego `GITHUB_TOKEN`, tworzonego automatycznie przez GitHub dla danego uruchomienia workflow.
-

@@ -14,11 +14,10 @@ def test_workbook(tmp_path):
     target=ExcelGenerator().generate(sample(),tmp_path/"out.xlsx")
     wb=load_workbook(target,data_only=False)
     assert wb.sheetnames==SHEETS
-    assert wb["DANE_BLACHY"]["K2"].value.startswith("=IF(")
+    assert wb["DANE_BLACHY"]["M2"].value==78.5
     assert wb["PODSUMOWANIE"]["B7"].value==7850
 
 
 def test_filename():
-    assert output_filename("abc-C-003-rev1.ifc")=="Zestawienie_stali_IFC_C-003.xlsx"
-    assert output_filename("abc.ifc")=="Zestawienie_stali_IFC_.xlsx"
-
+    assert output_filename("abc-C-003-rev1.ifc")=="abc-C-003-rev1 lista profili analiza.xlsx"
+    assert output_filename("abc.ifc")=="abc lista profili analiza.xlsx"

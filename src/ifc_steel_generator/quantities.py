@@ -6,7 +6,7 @@ ALIASES = {
     "length": ("length", "netlength"),
     "net_volume": ("netvolume", "net volume", "volume"),
     "gross_volume": ("grossvolume", "gross volume"),
-    "net_weight": ("netweight", "net weight", "weight"),
+    "net_weight": ("netweight", "weightnet", "net weight", "weight"),
     "outer_surface_area": ("outersurfacearea", "outer surface area", "surfacearea"),
     "net_area": ("netarea", "net area", "area"),
     "gross_area": ("grossarea", "gross area"),
@@ -49,4 +49,3 @@ def number(props: Mapping[str, object], field: str) -> float | None:
         if isinstance(wrapped, (int, float)):
             return float(wrapped)
     return None
-

@@ -7,7 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QRunnable, QSettings, QThreadPool, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QDoubleSpinBox,
-    QFileDialog, QFormLayout, QHBoxLayout, QLabel, QListWidget, QMainWindow, QMessageBox,
+    QFileDialog, QFormLayout, QHBoxLayout, QLabel, QListWidget, QMainWindow, QMessageBox, QInputDialog,
     QPlainTextEdit, QProgressBar, QPushButton, QVBoxLayout, QWidget)
 
 from .batch import process_batch
@@ -21,13 +21,14 @@ class WorkerSignals(QObject):
 
 
 class BatchWorker(QRunnable):
-    def __init__(self, files: list[str], output: str, density: float):
-        super().__init__(); self.files=files; self.output=output; self.density=density
+    def __init__(self, files: list[str], output: str, density: float,
+                 phases: dict[str, str | None]):
+        super().__init__(); self.files=files; self.output=output; self.density=density; self.phases=phases
         self.signals=WorkerSignals()
 
     def run(self) -> None:
         try:
-            value=process_batch(self.files,self.output,self.density,self.signals.message.emit,self.signals.progress.emit)
+            value=process_batch(self.files,self.output,self.density,self.signals.message.emit,self.signals.progress.emit,self.phases)
             self.signals.finished.emit(value)
         except Exception as exc:
             self.signals.fatal.emit(str(exc))
@@ -103,9 +104,34 @@ class MainWindow(QMainWindow):
         files=[self.files.item(i).text() for i in range(self.files.count())]
         if not files: QMessageBox.warning(self,"Brak plików","Dodaj co najmniej jeden plik IFC."); return
         if not Path(self.output.text()).is_dir(): QMessageBox.warning(self,"Błędny folder","Wybierz istniejący folder wynikowy."); return
+        phases = self.choose_phases(files)
+        if phases is None:
+            return
         self.generate.setEnabled(False); self.progress.setRange(0,0); self.settings.setValue("density",self.density.value())
         self.progress.setRange(0,len(files)); self.progress.setValue(0)
-        worker=BatchWorker(files,self.output.text(),self.density.value()); worker.signals.message.connect(self.append_log); worker.signals.progress.connect(self.update_progress); worker.signals.finished.connect(self.done); worker.signals.fatal.connect(self.failed); self.pool.start(worker)
+        worker=BatchWorker(files,self.output.text(),self.density.value(),phases); worker.signals.message.connect(self.append_log); worker.signals.progress.connect(self.update_progress); worker.signals.finished.connect(self.done); worker.signals.fatal.connect(self.failed); self.pool.start(worker)
+
+    def choose_phases(self, files: list[str]) -> dict[str, str | None] | None:
+        from .parser import IfcParser
+        parser = IfcParser(); selections: dict[str, str | None] = {}
+        for file in files:
+            try:
+                detected = parser.detect_phases(file)
+            except Exception as exc:
+                QMessageBox.critical(self, "Błąd odczytu faz", f"{Path(file).name}\n{exc}")
+                return None
+            if not detected:
+                selections[file] = None
+                continue
+            choices = ["Wszystkie fazy"] + [f"Faza {value}" for value in detected]
+            choice, accepted = QInputDialog.getItem(
+                self, "Wybór fazy", f"{Path(file).name}\nWykryte fazy: {', '.join(detected)}\nWybierz zakres raportu:",
+                choices, 0, False,
+            )
+            if not accepted:
+                return None
+            selections[file] = None if choice == "Wszystkie fazy" else choice.removeprefix("Faza ")
+        return selections
 
     def update_progress(self, value: int, total: int):
         self.progress.setRange(0,total); self.progress.setValue(value)

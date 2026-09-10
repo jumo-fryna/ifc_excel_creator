@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Callable
 
@@ -8,17 +9,34 @@ from .classifier import classify_element, parse_plate_designation
 from .materials import extract_material, extract_profile_name
 from .models import ElementKind, ParseResult, SteelElement
 from .quantities import flattened_properties, number
+from .steel_sections import profile_mass_per_m
 from .units import UnitConverter
 
 LOGGER = logging.getLogger(__name__)
 EXCLUDED = {
     "IfcFastener", "IfcMechanicalFastener", "IfcOpeningElement", "IfcGrid",
     "IfcAnnotation", "IfcReinforcingBar", "IfcReinforcingMesh", "IfcDistributionElement",
+    "IfcVoidingFeature",
 }
 
 
 class IfcParser:
-    def parse(self, path: str | Path, log: Callable[[str], None] | None = None) -> ParseResult:
+    def detect_phases(self, path: str | Path) -> list[str]:
+        try:
+            import ifcopenshell
+            model = ifcopenshell.open(str(Path(path)))
+        except Exception as exc:
+            raise ValueError(f"Nie można odczytać faz z pliku IFC: {exc}") from exc
+        phases = {
+            str(value).strip()
+            for element in model.by_type("IfcElement")
+            if (value := flattened_properties(element).get("phase")) is not None
+            and str(value).strip()
+        }
+        return sorted(phases, key=lambda value: (not value.isdigit(), int(value) if value.isdigit() else value))
+
+    def parse(self, path: str | Path, log: Callable[[str], None] | None = None,
+              phase: str | None = None) -> ParseResult:
         try:
             import ifcopenshell
         except ImportError as exc:
@@ -29,8 +47,10 @@ class IfcParser:
         except Exception as exc:
             raise ValueError(f"Nie można otworzyć pliku IFC: {exc}") from exc
         converter = UnitConverter.from_ifc(model)
+        geometry_settings = self._geometry_settings()
         result = ParseResult(source=source)
         seen: set[int] = set()
+        skipped_phases: dict[str, int] = {}
         for element in model.by_type("IfcElement"):
             eid = int(element.id())
             if eid in seen or any(element.is_a(name) for name in EXCLUDED):
@@ -38,7 +58,20 @@ class IfcParser:
             seen.add(eid)
             if not getattr(element, "Representation", None):
                 continue
-            item = self._extract(element, converter)
+            props = flattened_properties(element)
+            element_phase = props.get("phase")
+            if not self._phase_matches(element_phase, phase):
+                key = str(element_phase)
+                skipped_phases[key] = skipped_phases.get(key, 0) + 1
+                continue
+            item = self._extract(element, converter, props)
+            if self._needs_geometry(item):
+                try:
+                    self._apply_geometry_fallback(element, item, converter, geometry_settings)
+                except Exception as exc:
+                    warning = f"IFC #{eid}: nie można odczytać ilości z geometrii ({exc})"
+                    result.warnings.append(warning)
+                    LOGGER.warning(warning)
             if item.kind is ElementKind.PROFILE:
                 result.profiles.append(item)
             elif item.kind is ElementKind.PLATE:
@@ -50,14 +83,212 @@ class IfcParser:
                 result.warnings.append(f"IFC #{eid}: element nierozpoznany ({item.ifc_type}, {item.designation})")
         if log:
             log(f"Profile: {len(result.profiles)}, blachy: {len(result.plates)}")
+        if skipped_phases:
+            details = ", ".join(f"{key}: {value}" for key, value in sorted(skipped_phases.items()))
+            result.warnings.append(f"Pominięto elementy spoza fazy {phase} ({details})")
         return result
 
-    def _extract(self, element: object, units: UnitConverter) -> SteelElement:
+    @staticmethod
+    def _phase_matches(element_phase: object | None, selected_phase: str | None) -> bool:
+        return selected_phase is None or element_phase is None or str(element_phase).strip() == str(selected_phase)
+
+    @staticmethod
+    def _needs_geometry(item: SteelElement) -> bool:
+        if item.kind is ElementKind.PLATE:
+            return item.net_weight_kg is None and item.net_volume_m3 is None
+        if item.kind is ElementKind.PROFILE:
+            return item.length_mm is None or (
+                item.net_weight_kg is None
+                and item.unit_weight_kg_m is None
+                and item.net_volume_m3 is None
+            )
+        return False
+
+    @staticmethod
+    def _geometry_settings():
+        try:
+            import ifcopenshell.geom
+            settings = ifcopenshell.geom.settings()
+            settings.set(settings.USE_WORLD_COORDS, False)
+            settings.set(settings.CONTEXT_IDENTIFIERS, ["Body"])
+            return settings
+        except Exception:
+            return None
+
+    def _apply_geometry_fallback(self, element: object, item: SteelElement,
+                                 units: UnitConverter, settings: object | None) -> None:
+        if settings is None:
+            raise RuntimeError("moduł geometrii IfcOpenShell jest niedostępny")
+        import ifcopenshell.geom
+        import ifcopenshell.util.shape
+
+        shape = ifcopenshell.geom.create_shape(settings, element)
+        geometry = shape.geometry
+        dimensions = (
+            ifcopenshell.util.shape.get_x(geometry),
+            ifcopenshell.util.shape.get_y(geometry),
+            ifcopenshell.util.shape.get_z(geometry),
+        )
+        try:
+            net_volume = ifcopenshell.util.shape.get_volume(geometry)
+        except Exception:
+            net_volume = None
+        try:
+            surface_area = ifcopenshell.util.shape.get_area(geometry)
+        except Exception:
+            surface_area = None
+        if item.net_volume_m3 is None and net_volume is not None:
+            item.net_volume_m3 = net_volume
+        if item.outer_surface_area_m2 is None and surface_area is not None:
+            item.outer_surface_area_m2 = surface_area
+        if item.net_area_m2 is None and item.kind is ElementKind.PLATE and surface_area is not None:
+            item.net_area_m2 = surface_area
+        if item.length_mm is None and item.kind is ElementKind.PROFILE:
+            standard_prefixes = ("HEA", "HEB", "HEM", "IPE", "IPN", "UPE", "UPN", "UNP", "HS", "SHS", "RHS", "CHS", "MSH", "L", "N", "D")
+            extrusion = self._main_extrusion(element) if item.designation.upper().replace(" ", "").startswith(standard_prefixes) else None
+            bounding_length = self._profile_bbox_length(item.designation, dimensions)
+            extrusion_length = units.length_mm(float(extrusion.Depth)) if extrusion is not None else None
+            # For sloped columns the visible cut solid can be materially shorter
+            # than the stock extrusion. Ordinary beams and straight columns use
+            # their geometric extent, which avoids including Boolean-tool excess.
+            use_stock = (
+                extrusion_length is not None
+                and getattr(element, "is_a", lambda *_: False)("IfcColumn")
+                and extrusion_length > bounding_length + 20.0
+            )
+            item.length_mm = extrusion_length if use_stock else bounding_length
+
+        try:
+            gross_volume, gross_area = self._gross_geometry(element, settings)
+        except Exception:
+            gross_volume, gross_area = net_volume, surface_area
+        if item.gross_volume_m3 is None and gross_volume is not None:
+            item.gross_volume_m3 = gross_volume
+        if item.gross_area_m2 is None and item.kind is ElementKind.PLATE and gross_area is not None:
+            item.gross_area_m2 = gross_area
+
+        # A fabrication list reports the material blank before openings. When
+        # the IFC contains no quantities, that gross solid is the reliable mass
+        # basis. It is an exact representation item, not a guessed bounding box.
+        if item.kind is ElementKind.PLATE:
+            item.mass_volume_m3 = gross_volume
+            if not item.mass_source and gross_volume is not None:
+                item.mass_source = "geometria brutto IFC"
+        elif item.kind is ElementKind.PROFILE:
+            item.mass_volume_m3 = gross_volume
+            if not item.mass_source and gross_volume is not None:
+                item.mass_source = "geometria IFC"
+
+    @staticmethod
+    def _profile_bbox_length(designation: str, dimensions: tuple[float, float, float]) -> float:
+        name = designation.upper().replace(" ", "")
+        ring = re.fullmatch(r"O(\d+(?:[.,]\d+)?)\*(\d+(?:[.,]\d+)?)", name)
+        if ring:
+            diameter_m = float(ring.group(1).replace(",", ".")) / 1000.0
+            transverse = [value for value in dimensions if abs(value - diameter_m) <= max(0.005, diameter_m * 0.02)]
+            if len(transverse) >= 2:
+                return min(dimensions) * 1000.0
+        return max(dimensions) * 1000.0
+
+    @staticmethod
+    def _body_items(element: object) -> list[object]:
+        definition = getattr(element, "Representation", None)
+        representations = getattr(definition, "Representations", []) or []
+        body = [r for r in representations if str(getattr(r, "RepresentationIdentifier", "")).lower() == "body"]
+        selected = body or list(representations[:1])
+        return [part for rep in selected for part in (getattr(rep, "Items", []) or [])]
+
+    def _gross_geometry(self, element: object, settings: object) -> tuple[float, float]:
+        import ifcopenshell.geom
+        import ifcopenshell.util.shape
+
+        volumes: list[float] = []
+        areas: list[float] = []
+        for representation_item in self._body_items(element):
+            created = ifcopenshell.geom.create_shape(settings, representation_item)
+            geometry = getattr(created, "geometry", created)
+            volumes.append(ifcopenshell.util.shape.get_volume(geometry))
+            areas.append(ifcopenshell.util.shape.get_area(geometry))
+        if not volumes:
+            raise ValueError("brak reprezentacji Body")
+        return sum(volumes), sum(areas)
+
+    def _nominal_profile_area(self, element: object, units: UnitConverter) -> float | None:
+        """Returns analytical nominal cross-section area for common IFC profiles."""
+        for representation_item in self._body_items(element):
+            swept = self._find_swept_area(representation_item)
+            if swept is None:
+                continue
+            if swept.is_a("IfcRectangleProfileDef"):
+                raw = float(swept.XDim) * float(swept.YDim)
+                return units.area_m2(raw)
+            if swept.is_a("IfcIShapeProfileDef"):
+                h = float(swept.OverallDepth); b = float(swept.OverallWidth)
+                tw = float(swept.WebThickness); tf = float(swept.FlangeThickness)
+                r = float(getattr(swept, "FilletRadius", None) or 0.0)
+                raw = 2.0 * b * tf + (h - 2.0 * tf) * tw + 4.0 * r * r * (1.0 - 3.141592653589793 / 4.0)
+                # Rolled section tables publish nominal areas to 10 mm².
+                if units.length_to_m == 0.001:
+                    raw = round(raw / 10.0) * 10.0
+                return units.area_m2(raw)
+        return None
+
+    @staticmethod
+    def _find_swept_area(root: object, seen: set[int] | None = None):
+        seen = seen or set()
+        entity_id = getattr(root, "id", lambda: 0)()
+        marker = (str(getattr(root, "is_a", lambda: "")()), entity_id) if entity_id else id(root)
+        if marker in seen:
+            return None
+        seen.add(marker)
+        swept = getattr(root, "SweptArea", None)
+        if swept is not None:
+            return swept
+        info = getattr(root, "get_info", lambda: {})()
+        for key, value in info.items():
+            if key in {"id", "type", "OwnerHistory"}:
+                continue
+            values = value if isinstance(value, (list, tuple)) else [value]
+            for child in values:
+                if hasattr(child, "is_a"):
+                    found = IfcParser._find_swept_area(child, seen)
+                    if found is not None:
+                        return found
+        return None
+
+    @staticmethod
+    def _main_extrusion(root: object, seen: set[int] | None = None):
+        """Find the stock extrusion, following the first operand before cuts."""
+        seen = seen or set()
+        entity_id = getattr(root, "id", lambda: 0)()
+        marker = (str(getattr(root, "is_a", lambda: "")()), entity_id) if entity_id else id(root)
+        if marker in seen:
+            return None
+        seen.add(marker)
+        if getattr(root, "is_a", lambda *_: False)("IfcExtrudedAreaSolid"):
+            return root
+        if getattr(root, "is_a", lambda *_: False)("IfcBooleanResult"):
+            return IfcParser._main_extrusion(getattr(root, "FirstOperand", None), seen)
+        info = getattr(root, "get_info", lambda: {})()
+        for key, value in info.items():
+            if key in {"id", "type", "OwnerHistory", "SecondOperand"}:
+                continue
+            values = value if isinstance(value, (list, tuple)) else [value]
+            for child in values:
+                if hasattr(child, "is_a"):
+                    found = IfcParser._main_extrusion(child, seen)
+                    if found is not None:
+                        return found
+        return None
+
+    def _extract(self, element: object, units: UnitConverter,
+                 props: dict[str, object] | None = None) -> SteelElement:
         ifc_type = str(element.is_a())
-        props = flattened_properties(element)
+        props = props if props is not None else flattened_properties(element)
         profile_name = extract_profile_name(element)
         fallback = next((str(v) for v in (
-            getattr(element, "Name", None), getattr(element, "ObjectType", None),
+            getattr(element, "ObjectType", None), getattr(element, "Description", None),
+            getattr(element, "Name", None),
             getattr(element, "Tag", None),
         ) if v), "")
         property_profile = props.get("profile")
@@ -83,4 +314,17 @@ class IfcParser:
         if kind is ElementKind.PLATE:
             item.thickness_mm = units.length_mm(thickness) if thickness is not None else plate_dims.thickness_mm
             item.nominal_width_mm = plate_dims.width_mm
+            if item.nominal_width_mm is None and plate_dims.thickness_mm is not None:
+                raw_width = number(props, "length")
+                if raw_width is not None:
+                    item.nominal_width_mm = units.length_mm(raw_width)
+                    width = item.nominal_width_mm
+                    width_text = str(int(round(width))) if abs(width - round(width)) < 1e-6 else f"{width:g}"
+                    item.designation = f"{designation}*{width_text}"
+            if item.net_weight_kg is not None:
+                item.mass_source = "IFC WeightNet"
+        elif kind is ElementKind.PROFILE:
+            item.unit_weight_kg_m, item.mass_source = profile_mass_per_m(designation)
+            if item.unit_weight_kg_m is None and item.net_weight_kg is not None:
+                item.mass_source = "IFC WeightNet"
         return item

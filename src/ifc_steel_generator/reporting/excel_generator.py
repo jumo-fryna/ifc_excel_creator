@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from collections import defaultdict
 from pathlib import Path
 
@@ -16,10 +15,8 @@ SHEETS = ["PODSUMOWANIE", "PROFILE", "BLACHY", "DANE_PROFILE", "DANE_BLACHY"]
 
 
 def output_filename(source: str | Path) -> str:
-    match = re.search(r"(?i)(C-\d+)", Path(source).stem)
-    suffix = match.group(1).upper() if match else ""
-    name = f"Zestawienie_stali_IFC_{suffix}.xlsx"
-    return re.sub(r'[<>:"/\\|?*]', "_", name)
+    safe_stem = "".join(c if c not in '<>:"/\\|?*' else "_" for c in Path(source).stem)
+    return f"{safe_stem} lista profili analiza.xlsx"
 
 
 class ExcelGenerator:
@@ -39,8 +36,8 @@ class ExcelGenerator:
         self._summary(wb["PODSUMOWANIE"], result, density)
         self._profiles(wb["PROFILE"], result.profiles, density)
         self._plates(wb["BLACHY"], result.plates, density)
-        self._profile_data(wb["DANE_PROFILE"], result.profiles)
-        self._plate_data(wb["DANE_BLACHY"], result.plates)
+        self._profile_data(wb["DANE_PROFILE"], result.profiles, density)
+        self._plate_data(wb["DANE_BLACHY"], result.plates, density)
         for ws in wb.worksheets:
             self._number_formats(ws)
             autosize(ws)
@@ -87,7 +84,7 @@ class ExcelGenerator:
             values=groups[key]; mass=self._mass(values,density); row+=1
             ws.append(["brak danych" if key is None else key,len(values),sum(x.net_area_m2 or 0 for x in values),sum(x.net_volume_m3 or 0 for x in values),mass])
         row=ws.max_row+2
-        notes=["Źródło:","Profile: długość i masa pochodzą z ilości IFC.","Blachy: masa jest obliczana jako NetVolume × gęstość stali.","Dla oznaczeń bez pewnej informacji o grubości pola grubości pozostają puste."]
+        notes=["Źródło:","Profile: NetWeight z IFC; przy jego braku masa tabelaryczna kg/m; następnie geometria IFC.","Blachy: masa z objętości bryły przed odjęciem otworów, jeśli IFC nie zawiera ilości.","Dla oznaczeń bez pewnej informacji o grubości pola grubości pozostają puste."]
         for note in notes:
             ws.cell(row,1,note).fill=NOTE_FILL; row+=1
         ws.freeze_panes="A4"
@@ -115,17 +112,17 @@ class ExcelGenerator:
         ws.append(["RAZEM BLACHY","","","",len(elements),sum(x.net_area_m2 or 0 for x in elements),sum(x.gross_area_m2 or 0 for x in elements),sum(x.net_volume_m3 or 0 for x in elements),sum(x.gross_volume_m3 or 0 for x in elements),mass,mass/1000]); style_total(ws[ws.max_row])
         ws.auto_filter.ref=f"A1:K{max(1,ws.max_row-1)}"; ws.freeze_panes="A2"
 
-    def _profile_data(self, ws, elements: list[SteelElement]) -> None:
-        headers=["IFC ID","Typ IFC","Profil","Marka/Tag","Materiał","Długość [mm]","NetVolume [m³]","NetWeight [kg]","OuterSurfaceArea [m²]"]
+    def _profile_data(self, ws, elements: list[SteelElement], density: float) -> None:
+        headers=["IFC ID","Typ IFC","Profil","Marka/Tag","Materiał","Długość [mm]","NetVolume [m³]","NetWeight [kg]","Masa tabelaryczna [kg/m]","Źródło masy","Masa obliczona [kg]","OuterSurfaceArea [m²]"]
         ws.append(headers); style_header(ws[1])
-        for e in elements: ws.append([e.ifc_id,e.ifc_type,e.designation,e.tag,e.material,e.length_mm,e.net_volume_m3,e.net_weight_kg,e.outer_surface_area_m2])
+        for e in elements: ws.append([e.ifc_id,e.ifc_type,e.designation,e.tag,e.material,e.length_mm,e.net_volume_m3,e.net_weight_kg,e.unit_weight_kg_m,e.mass_source,e.mass_kg(density),e.outer_surface_area_m2])
         self._table(ws,"DaneProfile")
 
-    def _plate_data(self, ws, elements: list[SteelElement]) -> None:
-        headers=["IFC ID","Oznaczenie blachy","Marka/Tag","Materiał","Grubość [mm]","Szerokość nominalna [mm]","NetArea [m²]","GrossArea [m²]","NetVolume [m³]","GrossVolume [m³]","Masa obliczona [kg]"]
+    def _plate_data(self, ws, elements: list[SteelElement], density: float) -> None:
+        headers=["IFC ID","Oznaczenie blachy","Marka/Tag","Materiał","Grubość [mm]","Szerokość nominalna [mm]","NetArea [m²]","GrossArea [m²]","NetVolume [m³]","GrossVolume [m³]","NetWeight [kg]","Źródło masy","Masa obliczona [kg]"]
         ws.append(headers); style_header(ws[1])
-        for idx,e in enumerate(elements,2):
-            ws.append([e.ifc_id,e.designation,e.tag,e.material,e.thickness_mm,e.nominal_width_mm,e.net_area_m2,e.gross_area_m2,e.net_volume_m3,e.gross_volume_m3,f'=IF(I{idx}="","",I{idx}*\'PODSUMOWANIE\'!$B$7)'])
+        for e in elements:
+            ws.append([e.ifc_id,e.designation,e.tag,e.material,e.thickness_mm,e.nominal_width_mm,e.net_area_m2,e.gross_area_m2,e.net_volume_m3,e.gross_volume_m3,e.net_weight_kg,e.mass_source,e.mass_kg(density)])
         self._table(ws,"DaneBlachy")
 
     @staticmethod

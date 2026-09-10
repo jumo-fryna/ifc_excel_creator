@@ -28,10 +28,17 @@ class SteelElement:
     gross_volume_m3: float | None = None
     net_weight_kg: float | None = None
     outer_surface_area_m2: float | None = None
+    mass_volume_m3: float | None = None
+    unit_weight_kg_m: float | None = None
+    mass_source: str = ""
 
     def mass_kg(self, density: float) -> float | None:
-        if self.kind is ElementKind.PROFILE and self.net_weight_kg is not None:
+        if self.kind is ElementKind.PROFILE and self.unit_weight_kg_m is not None and self.length_mm is not None:
+            return self.unit_weight_kg_m * self.length_mm / 1000.0
+        if self.net_weight_kg is not None:
             return self.net_weight_kg
+        if self.mass_volume_m3 is not None:
+            return self.mass_volume_m3 * density
         if self.net_volume_m3 is not None:
             return self.net_volume_m3 * density
         return None
@@ -59,4 +66,3 @@ class BatchItemResult:
     mass_kg: float = 0.0
     warnings: list[str] = field(default_factory=list)
     error: str | None = None
-
