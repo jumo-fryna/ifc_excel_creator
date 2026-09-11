@@ -6,7 +6,7 @@ Lokalna aplikacja Windows tworząca osobne zestawienie Excel dla każdego modelu
 
 ## Najprostsze użycie
 
-1. Pobierz `IFC_Steel_List_Generator.exe` z **Actions → ostatni udany Build Windows EXE → Artifacts**.
+1. Pobierz plik `IFC_Steel_List_Generator_vX.Y.Z.exe` z **Actions → ostatni udany Build Windows EXE → Artifacts**.
 2. Uruchom aplikację (Python nie jest potrzebny).
 3. Przeciągnij jeden lub więcej plików `.ifc` na okno.
 4. Wybierz folder wynikowy i kliknij **GENERUJ ZESTAWIENIA**.
@@ -59,7 +59,7 @@ Uruchom `build_windows.bat` albo:
 .\build_windows.ps1
 ```
 
-Gotowy plik znajduje się w `dist\IFC_Steel_List_Generator.exe`. GitHub Actions wykonuje te same testy i budowę automatycznie po każdym zapisie do `main`. Tag `v*` dołącza EXE do GitHub Release.
+Gotowy plik znajduje się w `dist\IFC_Steel_List_Generator_vX.Y.Z.exe`. Numer jest automatycznie pobierany z `pyproject.toml` i dodawany także do nazwy artefaktu GitHub. GitHub Actions wykonuje testy i budowę automatycznie po każdym zapisie do `main`. Tag `v*` dołącza EXE do GitHub Release.
 
 ## Ograniczenia IFC
 
