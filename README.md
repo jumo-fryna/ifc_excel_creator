@@ -23,7 +23,7 @@ Lokalna aplikacja Windows tworząca osobne zestawienie Excel dla każdego modelu
 
 Program odczytuje oznaczenia także z `ObjectType` i `Description`, ponieważ część eksporterów zapisuje profile i blachy jako `IfcDiscreteAccessory`, `IfcBeam` albo `IfcMember`. Oznaczenia `PL…` i `BL…` są klasyfikowane jako blachy niezależnie od klasy IFC.
 
-Dla profili program stosuje masę jednostkową `[kg/m]` z wbudowanych tablic przekrojów (m.in. IPE, HEA, HEB, HEM, UNP, kątowniki i profile zamknięte). Jeśli przekroju nie ma w tabeli, używa masy z IFC, a następnie geometrii. Dla blach preferuje dokładne `WeightNet` z IFC; przy jego braku oblicza masę z geometrii bryły przed odjęciem otworów. Domyślna gęstość stali wynosi **7850 kg/m³** i można ją zmienić w oknie aplikacji.
+Dla masy materiałowej profili program najpierw używa właściwości `Weight` zapisanej w IFC. Jeżeli jej brakuje, stosuje masę jednostkową `[kg/m]` z wbudowanych tablic przekrojów (m.in. IPE, HEA, HEB, HEM, UNP, kątowniki i profile zamknięte), a następnie `WeightNet` lub geometrię. Dla blach zachowuje kolejność `WeightNet`, `Weight`, objętość i geometria bryły, zgodną z listami materiałowymi obsługiwanych eksporterów. `WeightNet`/`NetVolume` są dodatkowo raportowane w osobnej kolumnie **Masa netto IFC (kontrolna)**. Domyślna gęstość stali wynosi **7850 kg/m³** i można ją zmienić w oknie aplikacji.
 
 Program nie zgaduje gatunku, grubości ani wymiarów. Niepewne wartości pozostają puste i są rejestrowane jako ostrzeżenia.
 

@@ -187,7 +187,7 @@ class MainWindow(QMainWindow):
     def done(self,results):
         self.generate.setEnabled(True); self.progress.setRange(0,1); self.progress.setValue(1)
         good=sum(r.error is None for r in results); profiles=sum(r.profiles for r in results); plates=sum(r.plates for r in results); mass=sum(r.mass_kg for r in results); errors=len(results)-good; warnings=sum(len(r.warnings) for r in results)
-        text=f"Przetworzono: {len(results)}\nPoprawnie: {good}\nBłędy: {errors}\nProfile: {profiles}\nBlachy: {plates}\nMasa: {mass/1000:.3f} t\nOstrzeżenia: {warnings}\nFolder: {self.output.text()}"
+        text=f"Przetworzono: {len(results)}\nPoprawnie: {good}\nBłędy: {errors}\nProfile: {profiles}\nBlachy: {plates}\nMasa materiałowa: {mass/1000:.3f} t\nOstrzeżenia: {warnings}\nFolder: {self.output.text()}"
         QMessageBox.information(self,"Zakończono",text); self.stage.setText("Zakończono")
         if self.open_folder.isChecked(): QDesktopServices.openUrl(QUrl.fromLocalFile(self.output.text()))
 

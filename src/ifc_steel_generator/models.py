@@ -26,6 +26,7 @@ class SteelElement:
     gross_area_m2: float | None = None
     net_volume_m3: float | None = None
     gross_volume_m3: float | None = None
+    gross_weight_kg: float | None = None
     net_weight_kg: float | None = None
     outer_surface_area_m2: float | None = None
     mass_volume_m3: float | None = None
@@ -33,12 +34,28 @@ class SteelElement:
     mass_source: str = ""
 
     def mass_kg(self, density: float) -> float | None:
-        if self.kind is ElementKind.PROFILE and self.unit_weight_kg_m is not None and self.length_mm is not None:
-            return self.unit_weight_kg_m * self.length_mm / 1000.0
+        if self.kind is ElementKind.PROFILE:
+            if self.gross_weight_kg is not None and self.gross_weight_kg > 0:
+                return self.gross_weight_kg
+            if self.unit_weight_kg_m is not None and self.length_mm is not None:
+                return self.unit_weight_kg_m * self.length_mm / 1000.0
+        # For plates preserve the fabrication-list convention used by the
+        # supported exporters: WeightNet describes the cut plate, while Weight
+        # is used only when no explicit net weight is present.
         if self.net_weight_kg is not None:
             return self.net_weight_kg
+        if self.gross_weight_kg is not None:
+            return self.gross_weight_kg
         if self.mass_volume_m3 is not None:
             return self.mass_volume_m3 * density
+        if self.net_volume_m3 is not None:
+            return self.net_volume_m3 * density
+        return None
+
+    def net_mass_kg(self, density: float) -> float | None:
+        """Control value based only on IFC net quantities."""
+        if self.net_weight_kg is not None:
+            return self.net_weight_kg
         if self.net_volume_m3 is not None:
             return self.net_volume_m3 * density
         return None

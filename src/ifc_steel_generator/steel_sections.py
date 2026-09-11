@@ -4,7 +4,7 @@ import math
 import re
 
 # Nominal masses of European hot-rolled sections [kg/m]. The table values are
-# the preferred source whenever IFC NetWeight is absent. Families conform to
+# the preferred source whenever IFC Weight is absent. Families conform to
 # EN 10365; hollow-section entries conform to the nominal EN 10219 dimensions.
 _IPE = {
     80: 6.0, 100: 8.1, 120: 10.4, 140: 12.9, 160: 15.8, 180: 18.8,

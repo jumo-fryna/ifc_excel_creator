@@ -106,11 +106,13 @@ class IfcParser:
 
     @staticmethod
     def _needs_geometry(item: SteelElement) -> bool:
+        has_gross_weight = item.gross_weight_kg is not None and item.gross_weight_kg > 0
         if item.kind is ElementKind.PLATE:
-            return item.net_weight_kg is None and item.net_volume_m3 is None
+            return not has_gross_weight and item.net_weight_kg is None and item.net_volume_m3 is None
         if item.kind is ElementKind.PROFILE:
             return item.length_mm is None or (
-                item.net_weight_kg is None
+                not has_gross_weight
+                and item.net_weight_kg is None
                 and item.unit_weight_kg_m is None
                 and item.net_volume_m3 is None
             )
@@ -486,6 +488,7 @@ class IfcParser:
             gross_area_m2=units.area_m2(number(props, "gross_area")),
             net_volume_m3=units.volume_m3(number(props, "net_volume")),
             gross_volume_m3=units.volume_m3(number(props, "gross_volume")),
+            gross_weight_kg=units.mass_kg(number(props, "gross_weight")),
             net_weight_kg=units.mass_kg(number(props, "net_weight")),
             outer_surface_area_m2=units.area_m2(number(props, "outer_surface_area")),
         )
@@ -501,8 +504,14 @@ class IfcParser:
                     item.designation = f"{designation}*{width_text}"
             if item.net_weight_kg is not None:
                 item.mass_source = "IFC WeightNet"
+            elif item.gross_weight_kg is not None:
+                item.mass_source = "IFC Weight"
         elif kind is ElementKind.PROFILE:
-            item.unit_weight_kg_m, item.mass_source = profile_mass_per_m(designation)
-            if item.unit_weight_kg_m is None and item.net_weight_kg is not None:
+            item.unit_weight_kg_m, table_source = profile_mass_per_m(designation)
+            if item.gross_weight_kg is not None and item.gross_weight_kg > 0:
+                item.mass_source = "IFC Weight"
+            elif item.unit_weight_kg_m is not None:
+                item.mass_source = table_source
+            elif item.net_weight_kg is not None:
                 item.mass_source = "IFC WeightNet"
         return item
