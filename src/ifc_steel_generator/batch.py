@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Collection
 from typing import Callable
 
 from .models import BatchItemResult
@@ -11,7 +12,7 @@ from .reporting.excel_generator import ExcelGenerator, output_filename
 def process_batch(files: list[str | Path], output_dir: str | Path, density: float = 7850.0,
                   status: Callable[[str], None] | None = None,
                   progress: Callable[[int, int], None] | None = None,
-                  phases: dict[str, str | None] | None = None) -> list[BatchItemResult]:
+                  phases: dict[str, Collection[str] | str | None] | None = None) -> list[BatchItemResult]:
     target = Path(output_dir)
     if not target.exists() or not target.is_dir():
         raise ValueError("Folder wynikowy nie istnieje.")

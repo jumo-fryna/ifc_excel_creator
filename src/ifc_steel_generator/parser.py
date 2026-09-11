@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
-import re
+import os
 from pathlib import Path
+from collections.abc import Collection
 from typing import Callable
 
 from .classifier import classify_element, parse_plate_designation
@@ -36,7 +37,7 @@ class IfcParser:
         return sorted(phases, key=lambda value: (not value.isdigit(), int(value) if value.isdigit() else value))
 
     def parse(self, path: str | Path, log: Callable[[str], None] | None = None,
-              phase: str | None = None) -> ParseResult:
+              phase: str | Collection[str] | None = None) -> ParseResult:
         try:
             import ifcopenshell
         except ImportError as exc:
@@ -51,6 +52,7 @@ class IfcParser:
         result = ParseResult(source=source)
         seen: set[int] = set()
         skipped_phases: dict[str, int] = {}
+        pending_geometry: list[tuple[object, SteelElement]] = []
         for element in model.by_type("IfcElement"):
             eid = int(element.id())
             if eid in seen or any(element.is_a(name) for name in EXCLUDED):
@@ -66,12 +68,7 @@ class IfcParser:
                 continue
             item = self._extract(element, converter, props)
             if self._needs_geometry(item):
-                try:
-                    self._apply_geometry_fallback(element, item, converter, geometry_settings)
-                except Exception as exc:
-                    warning = f"IFC #{eid}: nie można odczytać ilości z geometrii ({exc})"
-                    result.warnings.append(warning)
-                    LOGGER.warning(warning)
+                pending_geometry.append((element, item))
             if item.kind is ElementKind.PROFILE:
                 result.profiles.append(item)
             elif item.kind is ElementKind.PLATE:
@@ -81,16 +78,31 @@ class IfcParser:
             else:
                 result.unclassified.append(item)
                 result.warnings.append(f"IFC #{eid}: element nierozpoznany ({item.ifc_type}, {item.designation})")
+        if pending_geometry:
+            if log:
+                log(f"Obliczanie geometrii 3D: {len(pending_geometry)} elementów...")
+            self._apply_geometry_batch(model, pending_geometry, converter, geometry_settings, result)
         if log:
             log(f"Profile: {len(result.profiles)}, blachy: {len(result.plates)}")
         if skipped_phases:
             details = ", ".join(f"{key}: {value}" for key, value in sorted(skipped_phases.items()))
-            result.warnings.append(f"Pominięto elementy spoza fazy {phase} ({details})")
+            selected = ", ".join(sorted(self._selected_phases(phase)))
+            result.warnings.append(f"Pominięto elementy spoza wybranych faz {selected} ({details})")
         return result
 
     @staticmethod
-    def _phase_matches(element_phase: object | None, selected_phase: str | None) -> bool:
-        return selected_phase is None or element_phase is None or str(element_phase).strip() == str(selected_phase)
+    def _selected_phases(selected_phase: str | Collection[str] | None) -> set[str]:
+        if selected_phase is None:
+            return set()
+        if isinstance(selected_phase, str):
+            return {selected_phase.strip()}
+        return {str(value).strip() for value in selected_phase if str(value).strip()}
+
+    @classmethod
+    def _phase_matches(cls, element_phase: object | None,
+                       selected_phase: str | Collection[str] | None) -> bool:
+        selected = cls._selected_phases(selected_phase)
+        return not selected or element_phase is None or str(element_phase).strip() in selected
 
     @staticmethod
     def _needs_geometry(item: SteelElement) -> bool:
@@ -105,25 +117,155 @@ class IfcParser:
         return False
 
     @staticmethod
-    def _geometry_settings():
+    def _geometry_settings(disable_openings: bool = False):
         try:
             import ifcopenshell.geom
             settings = ifcopenshell.geom.settings()
             settings.set(settings.USE_WORLD_COORDS, False)
             settings.set(settings.CONTEXT_IDENTIFIERS, ["Body"])
+            if disable_openings:
+                settings.set("disable-opening-subtractions", True)
             return settings
         except Exception:
             return None
 
+    def _apply_geometry_batch(self, model: object,
+                              pending: list[tuple[object, SteelElement]],
+                              units: UnitConverter, settings: object | None,
+                              result: ParseResult) -> None:
+        if settings is None:
+            for element, _ in pending:
+                self._geometry_warning(result, element, "moduł geometrii IfcOpenShell jest niedostępny")
+            return
+        processed: set[int] = set()
+        by_id = {int(element.id()): (element, item) for element, item in pending}
+        try:
+            import ifcopenshell.geom
+
+            threads = min(4, max(1, os.cpu_count() or 1))
+            iterator = ifcopenshell.geom.iterator(
+                settings, model, num_threads=threads,
+                include=[element for element, _ in pending],
+            )
+            if iterator.initialize():
+                while True:
+                    shape = iterator.get()
+                    eid = int(shape.id)
+                    pair = by_id.get(eid)
+                    if pair is not None:
+                        element, item = pair
+                        try:
+                            self._apply_geometry_fallback(
+                                element, item, units, settings, geometry=shape.geometry,
+                            )
+                            processed.add(eid)
+                        except Exception as exc:
+                            LOGGER.warning(
+                                "IFC #%s: równoległy odczyt geometrii nie powiódł się (%s)",
+                                eid, exc,
+                            )
+                    if not iterator.next():
+                        break
+        except Exception as exc:
+            LOGGER.warning("Równoległy odczyt geometrii nie powiódł się: %s", exc)
+
+        # Some IFC geometry engines omit an unsupported product from an
+        # iterator. Retry only those products one by one so one bad object does
+        # not discard the remainder of the report.
+        for element, item in pending:
+            eid = int(element.id())
+            if eid in processed:
+                continue
+            try:
+                self._apply_geometry_fallback(element, item, units, settings)
+            except Exception as exc:
+                self._geometry_warning(result, element, exc)
+
+        # Product-level IfcOpeningElement cuts are not part of the fabrication
+        # blank. Re-run only affected products, still in parallel, with opening
+        # subtraction disabled. Uncut products reuse the first geometry.
+        gross_pending = [
+            (element, item) for element, item in pending
+            if int(element.id()) in processed and getattr(element, "HasOpenings", ())
+        ]
+        if gross_pending:
+            self._apply_gross_opening_geometry(model, gross_pending, result)
+
+    def _apply_gross_opening_geometry(self, model: object,
+                                      pending: list[tuple[object, SteelElement]],
+                                      result: ParseResult) -> None:
+        gross_settings = self._geometry_settings(disable_openings=True)
+        if gross_settings is None:
+            return
+        updated: set[int] = set()
+        by_id = {int(element.id()): (element, item) for element, item in pending}
+        try:
+            import ifcopenshell.geom
+
+            threads = min(4, max(1, os.cpu_count() or 1))
+            iterator = ifcopenshell.geom.iterator(
+                gross_settings, model, num_threads=threads,
+                include=[element for element, _ in pending],
+            )
+            if iterator.initialize():
+                while True:
+                    shape = iterator.get()
+                    eid = int(shape.id)
+                    pair = by_id.get(eid)
+                    if pair is not None:
+                        _, item = pair
+                        self._set_gross_geometry(item, shape.geometry)
+                        updated.add(eid)
+                    if not iterator.next():
+                        break
+        except Exception as exc:
+            LOGGER.warning("Równoległy odczyt geometrii brutto nie powiódł się: %s", exc)
+
+        for element, item in pending:
+            if int(element.id()) in updated:
+                continue
+            try:
+                gross_volume, gross_area = self._gross_geometry(element, gross_settings)
+                self._set_gross_values(item, gross_volume, gross_area)
+            except Exception as exc:
+                self._geometry_warning(result, element, f"geometria brutto: {exc}")
+
+    @staticmethod
+    def _set_gross_geometry(item: SteelElement, geometry: object) -> None:
+        import ifcopenshell.util.shape
+
+        gross_volume = ifcopenshell.util.shape.get_volume(geometry)
+        gross_area = ifcopenshell.util.shape.get_area(geometry)
+        IfcParser._set_gross_values(item, gross_volume, gross_area)
+
+    @staticmethod
+    def _set_gross_values(item: SteelElement, gross_volume: float | None,
+                          gross_area: float | None) -> None:
+        if gross_volume is not None:
+            item.gross_volume_m3 = gross_volume
+            item.mass_volume_m3 = gross_volume
+        if item.kind is ElementKind.PLATE and gross_area is not None:
+            item.gross_area_m2 = gross_area
+        if gross_volume is not None and item.kind is ElementKind.PLATE:
+            item.mass_source = "geometria brutto IFC"
+
+    @staticmethod
+    def _geometry_warning(result: ParseResult, element: object, exc: object) -> None:
+        warning = f"IFC #{int(element.id())}: nie można odczytać ilości z geometrii ({exc})"
+        result.warnings.append(warning)
+        LOGGER.warning(warning)
+
     def _apply_geometry_fallback(self, element: object, item: SteelElement,
-                                 units: UnitConverter, settings: object | None) -> None:
+                                 units: UnitConverter, settings: object | None,
+                                 geometry: object | None = None) -> None:
         if settings is None:
             raise RuntimeError("moduł geometrii IfcOpenShell jest niedostępny")
         import ifcopenshell.geom
         import ifcopenshell.util.shape
 
-        shape = ifcopenshell.geom.create_shape(settings, element)
-        geometry = shape.geometry
+        if geometry is None:
+            shape = ifcopenshell.geom.create_shape(settings, element)
+            geometry = shape.geometry
         dimensions = (
             ifcopenshell.util.shape.get_x(geometry),
             ifcopenshell.util.shape.get_y(geometry),
@@ -146,7 +288,7 @@ class IfcParser:
         if item.length_mm is None and item.kind is ElementKind.PROFILE:
             standard_prefixes = ("HEA", "HEB", "HEM", "IPE", "IPN", "UPE", "UPN", "UNP", "HS", "SHS", "RHS", "CHS", "MSH", "L", "N", "D")
             extrusion = self._main_extrusion(element) if item.designation.upper().replace(" ", "").startswith(standard_prefixes) else None
-            bounding_length = self._profile_bbox_length(item.designation, dimensions)
+            bounding_length = self._profile_geometry_length(geometry, dimensions)
             extrusion_length = units.length_mm(float(extrusion.Depth)) if extrusion is not None else None
             # For sloped columns the visible cut solid can be materially shorter
             # than the stock extrusion. Ordinary beams and straight columns use
@@ -158,10 +300,10 @@ class IfcParser:
             )
             item.length_mm = extrusion_length if use_stock else bounding_length
 
-        try:
-            gross_volume, gross_area = self._gross_geometry(element, settings)
-        except Exception:
-            gross_volume, gross_area = net_volume, surface_area
+        # Creating the same Body representation a second time was the largest
+        # performance bottleneck and did not restore a pre-cut blank for BRep
+        # exports.  Keep the actual IFC solid as the explicit fallback basis.
+        gross_volume, gross_area = net_volume, surface_area
         if item.gross_volume_m3 is None and gross_volume is not None:
             item.gross_volume_m3 = gross_volume
         if item.gross_area_m2 is None and item.kind is ElementKind.PLATE and gross_area is not None:
@@ -173,21 +315,57 @@ class IfcParser:
         if item.kind is ElementKind.PLATE:
             item.mass_volume_m3 = gross_volume
             if not item.mass_source and gross_volume is not None:
-                item.mass_source = "geometria brutto IFC"
+                item.mass_source = "geometria IFC"
         elif item.kind is ElementKind.PROFILE:
             item.mass_volume_m3 = gross_volume
             if not item.mass_source and gross_volume is not None:
                 item.mass_source = "geometria IFC"
 
     @staticmethod
-    def _profile_bbox_length(designation: str, dimensions: tuple[float, float, float]) -> float:
-        name = designation.upper().replace(" ", "")
-        ring = re.fullmatch(r"O(\d+(?:[.,]\d+)?)\*(\d+(?:[.,]\d+)?)", name)
-        if ring:
-            diameter_m = float(ring.group(1).replace(",", ".")) / 1000.0
-            transverse = [value for value in dimensions if abs(value - diameter_m) <= max(0.005, diameter_m * 0.02)]
-            if len(transverse) >= 2:
-                return min(dimensions) * 1000.0
+    def _profile_geometry_length(geometry: object,
+                                 dimensions: tuple[float, float, float]) -> float:
+        """Return length along the solid's principal axis, in millimetres.
+
+        An axis-aligned bounding box shortens every sloped member. Surface
+        normals recover the longitudinal axis, including BRep-only exports
+        which do not expose an IfcExtrudedAreaSolid or a Length quantity.
+        """
+        try:
+            import numpy as np
+
+            vertices = np.asarray(getattr(geometry, "verts"), dtype=float).reshape((-1, 3))
+            if len(vertices) < 3:
+                raise ValueError("za mało wierzchołków")
+            direction = None
+            faces = np.asarray(getattr(geometry, "faces", ()), dtype=int)
+            if len(faces) >= 3:
+                triangles = vertices[faces.reshape((-1, 3))]
+                crosses = np.cross(
+                    triangles[:, 1] - triangles[:, 0],
+                    triangles[:, 2] - triangles[:, 0],
+                )
+                twice_area = np.linalg.norm(crosses, axis=1)
+                valid = twice_area > 1e-12
+                normals = crosses[valid] / twice_area[valid, None]
+                areas = twice_area[valid] / 2.0
+                # Side-face normals are perpendicular to the member axis and
+                # dominate by area. The least represented normal direction is
+                # therefore the stock axis, even with angled cuts and holes.
+                normal_covariance = np.einsum(
+                    "i,ij,ik->jk", areas, normals, normals,
+                )
+                values, vectors = np.linalg.eigh(normal_covariance)
+                direction = vectors[:, int(np.argmin(values))]
+            if direction is None:
+                centered = vertices - vertices.mean(axis=0)
+                covariance = np.cov(centered, rowvar=False)
+                values, vectors = np.linalg.eigh(covariance)
+                direction = vectors[:, int(np.argmax(values))]
+            span_m = float(np.ptp(vertices @ direction))
+            if span_m > 0:
+                return span_m * 1000.0
+        except Exception:
+            pass
         return max(dimensions) * 1000.0
 
     @staticmethod

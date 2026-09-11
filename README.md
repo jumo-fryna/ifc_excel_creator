@@ -10,7 +10,7 @@ Lokalna aplikacja Windows tworząca osobne zestawienie Excel dla każdego modelu
 2. Uruchom aplikację (Python nie jest potrzebny).
 3. Przeciągnij jeden lub więcej plików `.ifc` na okno.
 4. Wybierz folder wynikowy i kliknij **GENERUJ ZESTAWIENIA**.
-5. Dla każdego IFC program osobno pokaże wykryte fazy. Wybierz jedną fazę albo **Wszystkie fazy**.
+5. Dla każdego IFC program osobno pokaże listę wykrytych faz. Zaznacz jedną, kilka albo wszystkie fazy.
 6. Dla każdego IFC powstanie osobny plik `<nazwa IFC> lista profili analiza.xlsx`.
 
 ## Arkusze raportu
@@ -66,7 +66,7 @@ Gotowy plik znajduje się w `dist\IFC_Steel_List_Generator_vX.Y.Z.exe`. Numer je
 - Wynik zależy od ilości i materiałów faktycznie zapisanych przez program eksportujący IFC.
 - Obsługiwane są typowe modele IFC2x3 i IFC4; nietypowe własne właściwości mogą wymagać rozszerzenia aliasów.
 - Element bez reprezentacji geometrycznej nie jest liczony jako część fizyczna.
-- Faza nie jest zgadywana z nazwy pliku. Program wykrywa wartości `Phase` i pyta o zakres osobno dla każdego pliku przy każdym generowaniu.
+- Faza nie jest zgadywana z nazwy pliku. Program wykrywa wartości `Phase` i pozwala zaznaczyć wiele faz osobno dla każdego pliku przy każdym generowaniu.
 - Nierozpoznane elementy są pomijane w zestawieniu i zapisywane w logu.
 - Grubość oznaczenia `D35` pozostaje pusta, jeśli IFC nie zawiera wiarygodnej właściwości grubości.
 

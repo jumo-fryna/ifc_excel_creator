@@ -7,6 +7,8 @@ from ifc_steel_generator.steel_sections import profile_mass_per_m
     ("IPE100", 8.0855),
     ("HEA 300", 88.3),
     ("HEB100", 20.41),
+    ("HEM240", 157.0),
+    ("IPE300", 42.2),
     ("L60x4", 3.56),
     ("N33.7/3.2", 2.407),
     ("O452*6", 65.994),

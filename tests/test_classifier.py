@@ -8,6 +8,9 @@ from ifc_steel_generator.models import ElementKind
     ("PL16*144",16,144),("PL16x144",16,144),("PL16X144",16,144),
     ("PL16×144",16,144),("PL12.5x200",12.5,200),("D35",None,None),
     ("BL10*108",10,108),
+    ("BL55*10",10,55),
+    ("BL400*10",10,400),
+    ("BL52.8*14.5",14.5,52.8),
     ("PL10",10,None),
 ])
 def test_plate_dimensions(name,thickness,width):

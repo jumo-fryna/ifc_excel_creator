@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import ifcopenshell
+import numpy as np
 import pytest
 
 from ifc_steel_generator.parser import IfcParser
@@ -34,3 +35,23 @@ def test_geometry_fallback_for_plate_and_rolled_profile(tmp_path):
     assert parsed.plates[0].mass_kg(7850)==pytest.approx(1.1618,abs=0.0001)
     assert parsed.profiles[0].length_mm==pytest.approx(150.0,abs=0.01)
     assert parsed.profiles[0].mass_kg(7850)==pytest.approx(3.0615,abs=0.001)
+
+
+def test_profile_length_follows_sloped_principal_axis():
+    class Geometry:
+        pass
+
+    # A 12 m member at roughly 22 degrees has an axis-aligned extent of only
+    # 11.1 m. The parser must measure along the member, not along X/Y/Z.
+    direction = np.array([12 / 13, 5 / 13, 0.0])
+    transverse = np.array([-5 / 13, 12 / 13, 0.0])
+    vertical = np.array([0.0, 0.0, 1.0])
+    vertices = []
+    for along in (0.0, 12.0):
+        for across in (-0.15, 0.15):
+            for height in (-0.075, 0.075):
+                vertices.append(along * direction + across * transverse + height * vertical)
+    geometry = Geometry()
+    geometry.verts = np.asarray(vertices).reshape(-1).tolist()
+    length = IfcParser._profile_geometry_length(geometry, (11.1, 4.9, 0.15))
+    assert length == pytest.approx(12_000.0, abs=0.01)

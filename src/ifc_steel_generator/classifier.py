@@ -30,10 +30,12 @@ def parse_plate_designation(value: str | None) -> PlateDimensions:
         if single:
             return PlateDimensions(float(single.group(1).replace(",", ".")), None)
         return PlateDimensions(None, None)
-    return PlateDimensions(
-        float(match.group(1).replace(",", ".")),
-        float(match.group(2).replace(",", ".")),
-    )
+    first = float(match.group(1).replace(",", "."))
+    second = float(match.group(2).replace(",", "."))
+    # Fabrication systems use both PL<grubość>*<szerokość> and
+    # BL<szerokość>*<grubość>.  The thinner dimension is the plate thickness;
+    # relying on the written order turned e.g. BL400*10 into a 400 mm plate.
+    return PlateDimensions(min(first, second), max(first, second))
 
 
 def classify_element(ifc_type: str, designation: str, has_profile: bool = False) -> ElementKind:

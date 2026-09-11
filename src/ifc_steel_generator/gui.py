@@ -4,11 +4,12 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QRunnable, QSettings, QThreadPool, QUrl, Signal
+from PySide6.QtCore import Qt, QObject, QRunnable, QSettings, QThreadPool, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QDragEnterEvent, QDropEvent
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QDoubleSpinBox,
-    QFileDialog, QFormLayout, QHBoxLayout, QLabel, QListWidget, QMainWindow, QMessageBox, QInputDialog,
-    QPlainTextEdit, QProgressBar, QPushButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QDialog,
+    QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
+    QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit,
+    QProgressBar, QPushButton, QVBoxLayout, QWidget)
 
 from .batch import process_batch
 
@@ -22,7 +23,7 @@ class WorkerSignals(QObject):
 
 class BatchWorker(QRunnable):
     def __init__(self, files: list[str], output: str, density: float,
-                 phases: dict[str, str | None]):
+                 phases: dict[str, tuple[str, ...] | None]):
         super().__init__(); self.files=files; self.output=output; self.density=density; self.phases=phases
         self.signals=WorkerSignals()
 
@@ -57,6 +58,56 @@ class DropList(QListWidget):
                 value=str(candidate.resolve())
                 if candidate.suffix.lower()==".ifc" and value not in current:
                     self.addItem(value); current.add(value)
+
+
+class PhaseSelectionDialog(QDialog):
+    def __init__(self, filename: str, phases: list[str], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Wybór faz")
+        self.setMinimumWidth(460)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(
+            f"{filename}\nZaznacz jedną lub kilka faz do zestawienia:", self,
+        ))
+        self.phase_list = QListWidget(self)
+        for phase in phases:
+            item = QListWidgetItem(f"Faza {phase}", self.phase_list)
+            item.setData(Qt.ItemDataRole.UserRole, phase)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked)
+        layout.addWidget(self.phase_list)
+        selection_buttons = QHBoxLayout()
+        select_all = QPushButton("Zaznacz wszystkie", self)
+        clear_all = QPushButton("Odznacz wszystkie", self)
+        select_all.clicked.connect(lambda: self._set_all(Qt.CheckState.Checked))
+        clear_all.clicked.connect(lambda: self._set_all(Qt.CheckState.Unchecked))
+        selection_buttons.addWidget(select_all)
+        selection_buttons.addWidget(clear_all)
+        layout.addLayout(selection_buttons)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=self,
+        )
+        buttons.accepted.connect(self._accept_selection)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _set_all(self, state: Qt.CheckState) -> None:
+        for index in range(self.phase_list.count()):
+            self.phase_list.item(index).setCheckState(state)
+
+    def selected_phases(self) -> tuple[str, ...]:
+        return tuple(
+            str(self.phase_list.item(index).data(Qt.ItemDataRole.UserRole))
+            for index in range(self.phase_list.count())
+            if self.phase_list.item(index).checkState() == Qt.CheckState.Checked
+        )
+
+    def _accept_selection(self) -> None:
+        if not self.selected_phases():
+            QMessageBox.warning(self, "Brak faz", "Zaznacz co najmniej jedną fazę.")
+            return
+        self.accept()
 
 
 class MainWindow(QMainWindow):
@@ -111,9 +162,9 @@ class MainWindow(QMainWindow):
         self.progress.setRange(0,len(files)); self.progress.setValue(0)
         worker=BatchWorker(files,self.output.text(),self.density.value(),phases); worker.signals.message.connect(self.append_log); worker.signals.progress.connect(self.update_progress); worker.signals.finished.connect(self.done); worker.signals.fatal.connect(self.failed); self.pool.start(worker)
 
-    def choose_phases(self, files: list[str]) -> dict[str, str | None] | None:
+    def choose_phases(self, files: list[str]) -> dict[str, tuple[str, ...] | None] | None:
         from .parser import IfcParser
-        parser = IfcParser(); selections: dict[str, str | None] = {}
+        parser = IfcParser(); selections: dict[str, tuple[str, ...] | None] = {}
         for file in files:
             try:
                 detected = parser.detect_phases(file)
@@ -123,14 +174,11 @@ class MainWindow(QMainWindow):
             if not detected:
                 selections[file] = None
                 continue
-            choices = ["Wszystkie fazy"] + [f"Faza {value}" for value in detected]
-            choice, accepted = QInputDialog.getItem(
-                self, "Wybór fazy", f"{Path(file).name}\nWykryte fazy: {', '.join(detected)}\nWybierz zakres raportu:",
-                choices, 0, False,
-            )
-            if not accepted:
+            dialog = PhaseSelectionDialog(Path(file).name, detected, self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
                 return None
-            selections[file] = None if choice == "Wszystkie fazy" else choice.removeprefix("Faza ")
+            selected = dialog.selected_phases()
+            selections[file] = None if len(selected) == len(detected) else selected
         return selections
 
     def update_progress(self, value: int, total: int):
