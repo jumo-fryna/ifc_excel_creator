@@ -75,11 +75,73 @@ class ParseResult:
 
 
 @dataclass(slots=True)
+class AssemblyPart:
+    assembly_id: int
+    assembly_mark: str
+    assembly_name: str
+    shipping_mark: str
+    phase: str
+    lot_number: str
+    level: int
+    association_source: str
+    element: SteelElement
+
+
+@dataclass(slots=True)
+class AssemblyRecord:
+    ifc_id: int
+    mark: str
+    name: str = ""
+    shipping_mark: str = ""
+    phase: str = ""
+    lot_number: str = ""
+    position_code: str = ""
+    declared_mass_kg: float | None = None
+    parts: list[AssemblyPart] = field(default_factory=list)
+
+    def parts_mass_kg(self, density: float) -> float:
+        return sum(part.element.mass_kg(density) or 0.0 for part in self.parts)
+
+    def report_mass_kg(self, density: float) -> float:
+        if self.declared_mass_kg is not None and self.declared_mass_kg > 0:
+            return self.declared_mass_kg
+        return self.parts_mass_kg(density)
+
+    @property
+    def surface_area_m2(self) -> float:
+        return sum(part.element.outer_surface_area_m2 or 0.0 for part in self.parts)
+
+
+@dataclass(slots=True)
+class AssemblyParseResult:
+    source: Path
+    assemblies: list[AssemblyRecord] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def parts(self) -> list[AssemblyPart]:
+        return [part for assembly in self.assemblies for part in assembly.parts]
+
+
+@dataclass(slots=True)
 class BatchItemResult:
     source: Path
     output: Path | None = None
     profiles: int = 0
     plates: int = 0
     mass_kg: float = 0.0
+    warnings: list[str] = field(default_factory=list)
+    error: str | None = None
+
+
+@dataclass(slots=True)
+class AssemblyBatchItemResult:
+    source: Path
+    structural_output: Path | None = None
+    shipping_output: Path | None = None
+    assemblies: int = 0
+    parts: int = 0
+    mass_kg: float = 0.0
+    surface_area_m2: float = 0.0
     warnings: list[str] = field(default_factory=list)
     error: str | None = None

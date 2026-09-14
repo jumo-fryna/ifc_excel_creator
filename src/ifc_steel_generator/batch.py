@@ -4,8 +4,10 @@ from pathlib import Path
 from collections.abc import Collection
 from typing import Callable
 
-from .models import BatchItemResult
+from .assembly_parser import IfcAssemblyParser
+from .models import AssemblyBatchItemResult, BatchItemResult
 from .parser import IfcParser
+from .reporting.assembly_excel_generator import AssemblyExcelGenerator
 from .reporting.excel_generator import ExcelGenerator, output_filename
 
 
@@ -41,4 +43,40 @@ def process_batch(files: list[str | Path], output_dir: str | Path, density: floa
             if status: status(f"BŁĄD {source.name}: {exc}")
         results.append(item)
         if progress: progress(len(results), len(files))
+    return results
+
+
+def process_assembly_batch(files: list[str | Path], output_dir: str | Path,
+                           density: float = 7850.0,
+                           status: Callable[[str], None] | None = None,
+                           progress: Callable[[int, int], None] | None = None,
+                           phases: dict[str, Collection[str] | str | None] | None = None,
+                           ) -> list[AssemblyBatchItemResult]:
+    target = Path(output_dir)
+    if not target.exists() or not target.is_dir():
+        raise ValueError("Folder wynikowy nie istnieje.")
+    results: list[AssemblyBatchItemResult] = []
+    parser, generator = IfcAssemblyParser(), AssemblyExcelGenerator()
+    for file in files:
+        source = Path(file); item = AssemblyBatchItemResult(source=source)
+        try:
+            selected_phase = (phases or {}).get(str(source), None)
+            parsed = parser.parse(source, density=density, log=status, phase=selected_phase)
+            if status:
+                status("Generowanie listy strukturalnej i wysyłkowej...")
+            structural, shipping = generator.generate(parsed, target, density)
+            item.structural_output = structural; item.shipping_output = shipping
+            item.assemblies = len(parsed.assemblies); item.parts = len(parsed.parts)
+            item.mass_kg = sum(record.report_mass_kg(density) for record in parsed.assemblies)
+            item.surface_area_m2 = sum(record.surface_area_m2 for record in parsed.assemblies)
+            item.warnings = parsed.warnings
+            if status:
+                status(f"Zapisano {structural.name} oraz {shipping.name}")
+        except Exception as exc:
+            item.error = str(exc)
+            if status:
+                status(f"BŁĄD {source.name}: {exc}")
+        results.append(item)
+        if progress:
+            progress(len(results), len(files))
     return results

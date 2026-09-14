@@ -37,7 +37,8 @@ class IfcParser:
         return sorted(phases, key=lambda value: (not value.isdigit(), int(value) if value.isdigit() else value))
 
     def parse(self, path: str | Path, log: Callable[[str], None] | None = None,
-              phase: str | Collection[str] | None = None) -> ParseResult:
+              phase: str | Collection[str] | None = None,
+              require_surface: bool = False) -> ParseResult:
         try:
             import ifcopenshell
         except ImportError as exc:
@@ -67,7 +68,7 @@ class IfcParser:
                 skipped_phases[key] = skipped_phases.get(key, 0) + 1
                 continue
             item = self._extract(element, converter, props)
-            if self._needs_geometry(item):
+            if self._needs_geometry(item, require_surface=require_surface):
                 pending_geometry.append((element, item))
             if item.kind is ElementKind.PROFILE:
                 result.profiles.append(item)
@@ -105,7 +106,9 @@ class IfcParser:
         return not selected or element_phase is None or str(element_phase).strip() in selected
 
     @staticmethod
-    def _needs_geometry(item: SteelElement) -> bool:
+    def _needs_geometry(item: SteelElement, require_surface: bool = False) -> bool:
+        if require_surface and item.outer_surface_area_m2 is None:
+            return True
         has_gross_weight = item.gross_weight_kg is not None and item.gross_weight_kg > 0
         if item.kind is ElementKind.PLATE:
             return not has_gross_weight and item.net_weight_kg is None and item.net_volume_m3 is None

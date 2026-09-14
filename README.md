@@ -13,6 +13,13 @@ Lokalna aplikacja Windows tworząca osobne zestawienie Excel dla każdego modelu
 5. Dla każdego IFC program osobno pokaże listę wykrytych faz. Zaznacz jedną, kilka albo wszystkie fazy.
 6. Dla każdego IFC powstanie osobny plik `<nazwa IFC> lista profili analiza.xlsx`.
 
+Drugi przycisk **GENERUJ LISTY MONTAŻOWE I WYSYŁKOWE** tworzy dla każdego IFC dwa dodatkowe pliki:
+
+- `<nazwa IFC> lista strukturalna.xlsx` – zespoły montażowe i wszystkie przypisane części,
+- `<nazwa IFC> lista elementów wysyłkowych.xlsx` – elementy wysyłkowe pogrupowane według oznaczenia zespołu/ShippingMark.
+
+Obie listy zawierają masę i powierzchnię. Masa zespołu pochodzi z właściwości zespołu IFC, a gdy jej brakuje – z sumy mas części. Powierzchnia jest sumą zewnętrznych powierzchni części.
+
 ## Arkusze raportu
 
 - `PODSUMOWANIE` – liczby elementów, długość, objętość i masa, podział według materiału i grubości.
@@ -65,6 +72,8 @@ Gotowy plik znajduje się w `dist\IFC_Steel_List_Generator_vX.Y.Z.exe`. Numer je
 
 - Wynik zależy od ilości i materiałów faktycznie zapisanych przez program eksportujący IFC.
 - Obsługiwane są typowe modele IFC2x3 i IFC4; nietypowe własne właściwości mogą wymagać rozszerzenia aliasów.
+- Zespoły są odczytywane przede wszystkim z `IfcElementAssembly` i `IfcRelAggregates`. Program obsługuje też `ASSEMBLY_POS`, `AssemblyMark`, `Assembly/Cast unit Mark` i `ShippingMark`.
+- Gdy eksporter zapisze zespoły bez relacji (spotykane w niektórych eksportach Tekla/MTA), raport stosuje oznaczony mechanizm awaryjny oparty na kolejności bloków STEP i zapisuje ostrzeżenie.
 - Element bez reprezentacji geometrycznej nie jest liczony jako część fizyczna.
 - Faza nie jest zgadywana z nazwy pliku. Program wykrywa wartości `Phase` i pozwala zaznaczyć wiele faz osobno dla każdego pliku przy każdym generowaniu.
 - Nierozpoznane elementy są pomijane w zestawieniu i zapisywane w logu.

@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QDial
     QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit,
     QProgressBar, QPushButton, QVBoxLayout, QWidget)
 
-from .batch import process_batch
+from .batch import process_assembly_batch, process_batch
 
 
 class WorkerSignals(QObject):
@@ -23,13 +23,15 @@ class WorkerSignals(QObject):
 
 class BatchWorker(QRunnable):
     def __init__(self, files: list[str], output: str, density: float,
-                 phases: dict[str, tuple[str, ...] | None]):
+                 phases: dict[str, tuple[str, ...] | None], mode: str = "steel"):
         super().__init__(); self.files=files; self.output=output; self.density=density; self.phases=phases
+        self.mode=mode
         self.signals=WorkerSignals()
 
     def run(self) -> None:
         try:
-            value=process_batch(self.files,self.output,self.density,self.signals.message.emit,self.signals.progress.emit,self.phases)
+            process = process_assembly_batch if self.mode == "assemblies" else process_batch
+            value=process(self.files,self.output,self.density,self.signals.message.emit,self.signals.progress.emit,self.phases)
             self.signals.finished.emit(value)
         except Exception as exc:
             self.signals.fatal.emit(str(exc))
@@ -130,6 +132,9 @@ class MainWindow(QMainWindow):
         self.open_folder=QCheckBox("Otwórz folder po zakończeniu"); self.open_folder.setChecked(True); layout.addWidget(self.open_folder)
         self.generate=QPushButton("GENERUJ ZESTAWIENIA"); self.generate.setMinimumHeight(48); self.generate.setStyleSheet("font-size:16px;font-weight:bold;background:#4472c4;color:white")
         self.generate.clicked.connect(self.start); layout.addWidget(self.generate)
+        self.generate_assemblies=QPushButton("GENERUJ LISTY MONTAŻOWE I WYSYŁKOWE"); self.generate_assemblies.setMinimumHeight(48); self.generate_assemblies.setStyleSheet("font-size:15px;font-weight:bold;background:#548235;color:white")
+        self.generate_assemblies.setToolTip("Tworzy osobną listę strukturalną i listę elementów wysyłkowych z masami oraz powierzchniami")
+        self.generate_assemblies.clicked.connect(self.start_assemblies); layout.addWidget(self.generate_assemblies)
         self.progress=QProgressBar(); self.progress.setRange(0,1); layout.addWidget(self.progress)
         self.stage=QLabel("Gotowy"); layout.addWidget(self.stage); self.log=QPlainTextEdit(); self.log.setReadOnly(True); self.log.setMaximumHeight(160); layout.addWidget(self.log)
 
@@ -152,15 +157,21 @@ class MainWindow(QMainWindow):
         self.stage.setText(message); self.log.appendPlainText(f"[{datetime.now():%H:%M:%S}] {message}")
 
     def start(self):
+        self._start("steel")
+
+    def start_assemblies(self):
+        self._start("assemblies")
+
+    def _start(self, mode: str):
         files=[self.files.item(i).text() for i in range(self.files.count())]
         if not files: QMessageBox.warning(self,"Brak plików","Dodaj co najmniej jeden plik IFC."); return
         if not Path(self.output.text()).is_dir(): QMessageBox.warning(self,"Błędny folder","Wybierz istniejący folder wynikowy."); return
         phases = self.choose_phases(files)
         if phases is None:
             return
-        self.generate.setEnabled(False); self.progress.setRange(0,0); self.settings.setValue("density",self.density.value())
+        self.generate.setEnabled(False); self.generate_assemblies.setEnabled(False); self.progress.setRange(0,0); self.settings.setValue("density",self.density.value())
         self.progress.setRange(0,len(files)); self.progress.setValue(0)
-        worker=BatchWorker(files,self.output.text(),self.density.value(),phases); worker.signals.message.connect(self.append_log); worker.signals.progress.connect(self.update_progress); worker.signals.finished.connect(self.done); worker.signals.fatal.connect(self.failed); self.pool.start(worker)
+        worker=BatchWorker(files,self.output.text(),self.density.value(),phases,mode); worker.signals.message.connect(self.append_log); worker.signals.progress.connect(self.update_progress); worker.signals.finished.connect(lambda results, selected=mode: self.done(results, selected)); worker.signals.fatal.connect(self.failed); self.pool.start(worker)
 
     def choose_phases(self, files: list[str]) -> dict[str, tuple[str, ...] | None] | None:
         from .parser import IfcParser
@@ -184,15 +195,20 @@ class MainWindow(QMainWindow):
     def update_progress(self, value: int, total: int):
         self.progress.setRange(0,total); self.progress.setValue(value)
 
-    def done(self,results):
-        self.generate.setEnabled(True); self.progress.setRange(0,1); self.progress.setValue(1)
-        good=sum(r.error is None for r in results); profiles=sum(r.profiles for r in results); plates=sum(r.plates for r in results); mass=sum(r.mass_kg for r in results); errors=len(results)-good; warnings=sum(len(r.warnings) for r in results)
-        text=f"Przetworzono: {len(results)}\nPoprawnie: {good}\nBłędy: {errors}\nProfile: {profiles}\nBlachy: {plates}\nMasa materiałowa: {mass/1000:.3f} t\nOstrzeżenia: {warnings}\nFolder: {self.output.text()}"
+    def done(self,results,mode="steel"):
+        self.generate.setEnabled(True); self.generate_assemblies.setEnabled(True); self.progress.setRange(0,1); self.progress.setValue(1)
+        good=sum(r.error is None for r in results); errors=len(results)-good; warnings=sum(len(r.warnings) for r in results)
+        if mode == "assemblies":
+            assemblies=sum(r.assemblies for r in results); parts=sum(r.parts for r in results); mass=sum(r.mass_kg for r in results); surface=sum(r.surface_area_m2 for r in results)
+            text=f"Przetworzono: {len(results)}\nPoprawnie: {good}\nBłędy: {errors}\nZespoły montażowe: {assemblies}\nCzęści w zespołach: {parts}\nMasa raportowa: {mass/1000:.3f} t\nPowierzchnia: {surface:.3f} m²\nOstrzeżenia: {warnings}\nFolder: {self.output.text()}"
+        else:
+            profiles=sum(r.profiles for r in results); plates=sum(r.plates for r in results); mass=sum(r.mass_kg for r in results)
+            text=f"Przetworzono: {len(results)}\nPoprawnie: {good}\nBłędy: {errors}\nProfile: {profiles}\nBlachy: {plates}\nMasa materiałowa: {mass/1000:.3f} t\nOstrzeżenia: {warnings}\nFolder: {self.output.text()}"
         QMessageBox.information(self,"Zakończono",text); self.stage.setText("Zakończono")
         if self.open_folder.isChecked(): QDesktopServices.openUrl(QUrl.fromLocalFile(self.output.text()))
 
     def failed(self,message: str):
-        self.generate.setEnabled(True); self.progress.setRange(0,1); self.append_log(message); QMessageBox.critical(self,"Błąd",message)
+        self.generate.setEnabled(True); self.generate_assemblies.setEnabled(True); self.progress.setRange(0,1); self.append_log(message); QMessageBox.critical(self,"Błąd",message)
 
     def closeEvent(self,event):
         self.settings.setValue("size",self.size()); super().closeEvent(event)
