@@ -98,10 +98,6 @@ class IfcAssemblyParser:
             assembly_entities[record.ifc_id] = assembly
             marks.setdefault(mark.casefold(), []).append(record.ifc_id)
 
-        if not records:
-            result.warnings.append("Model nie zawiera zespołów IfcElementAssembly w wybranym zakresie.")
-            return result
-
         steel_elements = {
             item.ifc_id: item
             for item in elements_result.profiles + elements_result.plates + elements_result.unclassified
@@ -123,17 +119,62 @@ class IfcAssemblyParser:
         for element_id, item in steel_elements.items():
             if element_id in assigned:
                 continue
-            entity = model.by_id(element_id)
-            mark = _text(flattened_properties(entity), ASSEMBLY_MARK_KEYS)
+            mark = item.assembly_mark
             candidates = marks.get(mark.casefold(), []) if mark else []
             if candidates:
                 assembly_id = self._nearest_preceding(candidates, element_id)
                 self._append(records[assembly_id], item, 1, "ASSEMBLY_POS")
                 assigned.add(element_id)
 
+        # A mounting assembly does not have to be exported as an
+        # IfcElementAssembly. Tekla/Zeman commonly exports one-piece assemblies
+        # only as ordinary beams/plates carrying ASSEMBLY_POS and PART_POS.
+        # Each main part (PART_POS == ASSEMBLY_POS) is one physical assembly.
+        implicit_count = 0
+        unassigned_by_mark: dict[str, list[SteelElement]] = {}
+        for element_id, item in steel_elements.items():
+            if element_id not in assigned and item.assembly_mark:
+                unassigned_by_mark.setdefault(item.assembly_mark.casefold(), []).append(item)
+        for folded_mark, items in unassigned_by_mark.items():
+            if folded_mark in marks:
+                continue
+            mark = items[0].assembly_mark
+            main_parts = [
+                item for item in items
+                if item.part_position.casefold() == folded_mark
+            ]
+            if not main_parts:
+                main_parts = [min(items, key=lambda value: value.ifc_id)]
+                result.warnings.append(
+                    f"Zespół {mark}: brak jawnej części głównej; podział odtworzono z ASSEMBLY_POS."
+                )
+            seed_ids: list[int] = []
+            for main in sorted(main_parts, key=lambda value: value.ifc_id):
+                record = AssemblyRecord(
+                    ifc_id=main.ifc_id,
+                    mark=mark,
+                    name=main.name,
+                    shipping_mark=mark,
+                    phase=main.phase,
+                    declared_mass_kg=main.gross_weight_kg,
+                    length_mm=main.fabrication_length_mm,
+                )
+                records[record.ifc_id] = record
+                marks.setdefault(folded_mark, []).append(record.ifc_id)
+                seed_ids.append(record.ifc_id)
+                self._append(record, main, 1, "ASSEMBLY_POS/PART_POS")
+                assigned.add(main.ifc_id)
+                implicit_count += 1
+            for item in sorted(items, key=lambda value: value.ifc_id):
+                if item.ifc_id in assigned:
+                    continue
+                assembly_id = self._nearest_preceding(seed_ids, item.ifc_id)
+                self._append(records[assembly_id], item, 1, "ASSEMBLY_POS (zespół pośredni)")
+                assigned.add(item.ifc_id)
+
         # Last-resort support for malformed Tekla/MTA exports: the assembly,
         # its orphan property sets and its products form consecutive STEP blocks.
-        if relation_assemblies == 0:
+        if relation_assemblies == 0 and assembly_entities:
             sorted_ids = sorted(records)
             for element_id, item in steel_elements.items():
                 if element_id in assigned:
@@ -149,6 +190,14 @@ class IfcAssemblyParser:
                 "z kolejności bloków STEP i oznaczono jako awaryjne."
             )
 
+        for record in records.values():
+            if record.length_mm is None:
+                lengths = [
+                    part.element.fabrication_length_mm
+                    for part in record.parts
+                    if part.element.fabrication_length_mm is not None
+                ]
+                record.length_mm = max(lengths, default=None)
         result.assemblies = sorted(records.values(), key=lambda value: (value.mark, value.ifc_id))
         missing_surface = sum(part.element.outer_surface_area_m2 is None for part in result.parts)
         missing_mass = sum(part.element.mass_kg(density) is None for part in result.parts)
@@ -165,6 +214,10 @@ class IfcAssemblyParser:
             result.warnings.append(f"Brak masy dla {missing_mass} części zespołów.")
         if missing_surface:
             result.warnings.append(f"Brak powierzchni dla {missing_surface} części zespołów.")
+        if implicit_count:
+            result.warnings.append(
+                f"Zespoły jednoczęściowe wykryte z ASSEMBLY_POS/PART_POS: {implicit_count}."
+            )
         if log:
             log(f"Zespoły: {len(result.assemblies)}, części w zespołach: {len(result.parts)}")
         return result

@@ -10,14 +10,14 @@ from .classifier import classify_element, parse_plate_designation
 from .materials import extract_material, extract_profile_name
 from .models import ElementKind, ParseResult, SteelElement
 from .quantities import flattened_properties, number
-from .steel_sections import profile_mass_per_m
+from .steel_sections import profile_mass_per_m, profile_surface_per_m
 from .units import UnitConverter
 
 LOGGER = logging.getLogger(__name__)
 EXCLUDED = {
     "IfcFastener", "IfcMechanicalFastener", "IfcOpeningElement", "IfcGrid",
     "IfcAnnotation", "IfcReinforcingBar", "IfcReinforcingMesh", "IfcDistributionElement",
-    "IfcVoidingFeature",
+    "IfcVoidingFeature", "IfcCovering",
 }
 
 
@@ -276,6 +276,9 @@ class IfcParser:
             ifcopenshell.util.shape.get_y(geometry),
             ifcopenshell.util.shape.get_z(geometry),
         )
+        extrusion = self._main_extrusion(element) if item.kind is ElementKind.PROFILE else None
+        if extrusion is not None:
+            item.stock_length_mm = units.length_mm(float(extrusion.Depth))
         try:
             net_volume = ifcopenshell.util.shape.get_volume(geometry)
         except Exception:
@@ -292,7 +295,7 @@ class IfcParser:
             item.net_area_m2 = surface_area
         if item.length_mm is None and item.kind is ElementKind.PROFILE:
             standard_prefixes = ("HEA", "HEB", "HEM", "IPE", "IPN", "UPE", "UPN", "UNP", "HS", "SHS", "RHS", "CHS", "MSH", "L", "N", "D")
-            extrusion = self._main_extrusion(element) if item.designation.upper().replace(" ", "").startswith(standard_prefixes) else None
+            extrusion = extrusion if item.designation.upper().replace(" ", "").startswith(standard_prefixes) else None
             bounding_length = self._profile_geometry_length(geometry, dimensions)
             extrusion_length = units.length_mm(float(extrusion.Depth)) if extrusion is not None else None
             # For sloped columns the visible cut solid can be materially shorter
@@ -304,6 +307,10 @@ class IfcParser:
                 and extrusion_length > bounding_length + 20.0
             )
             item.length_mm = extrusion_length if use_stock else bounding_length
+        elif item.length_mm is None and item.kind is ElementKind.PLATE:
+            # For a plate, the fabrication length is its largest planar extent;
+            # the smallest extent is normally the thickness.
+            item.length_mm = max(dimensions) * 1000.0
 
         # Creating the same Body representation a second time was the largest
         # performance bottleneck and did not restore a pre-cut blank for BRep
@@ -484,8 +491,12 @@ class IfcParser:
         thickness = number(props, "thickness")
         item = SteelElement(
             ifc_id=int(element.id()), ifc_type=ifc_type, kind=kind,
-            designation=designation, tag=str(getattr(element, "Tag", None) or ""),
-            material=extract_material(element),
+            designation=designation, name=str(getattr(element, "Name", None) or ""),
+            tag=str(getattr(element, "Tag", None) or ""),
+            material=str(props.get("material") or props.get("materialgrade") or extract_material(element)),
+            assembly_mark=str(props.get("assemblypos") or "").strip(),
+            part_position=str(props.get("partpos") or "").strip(),
+            phase=str(props.get("phase") or "").strip(),
             length_mm=units.length_mm(number(props, "length")),
             net_area_m2=units.area_m2(number(props, "net_area")),
             gross_area_m2=units.area_m2(number(props, "gross_area")),
@@ -511,6 +522,7 @@ class IfcParser:
                 item.mass_source = "IFC Weight"
         elif kind is ElementKind.PROFILE:
             item.unit_weight_kg_m, table_source = profile_mass_per_m(designation)
+            item.unit_surface_m2_m = profile_surface_per_m(designation)
             if item.gross_weight_kg is not None and item.gross_weight_kg > 0:
                 item.mass_source = "IFC Weight"
             elif item.unit_weight_kg_m is not None:

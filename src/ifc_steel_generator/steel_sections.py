@@ -31,6 +31,7 @@ _EXACT = {
     # rounding error of one-decimal catalog display values in material sums.
     "HEA100": 16.642, "HEA140": 24.649, "HEA160": 30.458,
     "HEA200": 42.233, "HEA220": 50.4755,
+    "HEA320": 97.36,
     "HEB100": 20.41, "HEB160": 42.6255, "HEB200": 61.3085,
     "HEB220": 71.435,
     "HEM140": 63.271, "HEM240": 157.0,
@@ -38,8 +39,8 @@ _EXACT = {
     "IPE200": 22.3725, "IPE220": 26.219, "IPE240": 30.6935,
     "IPE270": 36.0315, "IPE330": 49.141, "IPE360": 57.0695,
     "IPE400": 66.3325,
-    "UNP100": 10.5975,
-    "L60*4": 3.56, "L60*6": 5.42435, "L120*8": 14.5696,
+    "UNP100": 10.5975, "UNP120": 13.345,
+    "L60*4": 3.56, "L60*6": 5.42435, "L80*8": 9.6555, "L120*8": 14.5696,
     "L100*100*5": 7.65375, "L150*150*10": 22.765,
     "L120*60*8": 10.8016, "L120*80*6": 9.1374,
     "HS70/3": 6.13085, "HS90/4": 10.5033,
@@ -48,8 +49,21 @@ _EXACT = {
     "MSH100*3": 9.083324279, "MSH100*4": 11.967550411,
     "SHS120*5": 17.7,
     "SHS300*10": 88.0,
+    "QR400*10": 121.685,
     "WTA625/220*10": 46.315,
     "WTC750/300*15": 91.845,
+}
+
+# Painted/external perimeter [m² per metre]. Internal faces of closed hollow
+# sections are deliberately excluded. Values come from the same fabrication
+# section definitions as the precise mass table above.
+_SURFACE_PER_M = {
+    "HEA140": 0.794, "HEA320": 1.76032,
+    "IPE200": 0.76865, "IPE400": 1.47,
+    "UNP120": 0.434,
+    "L60*6": 0.233, "L80*8": 0.311,
+    "MSH100*3": 0.399,
+    "QR400*10": 1.57,
 }
 
 
@@ -80,3 +94,8 @@ def profile_mass_per_m(value: str | None) -> tuple[float | None, str]:
             area_mm2 = math.pi * (diameter**2 - (diameter - 2 * wall)**2) / 4
             return round(area_mm2 * 0.00785, 3), "tabela/rura wg wymiarów"
     return None, ""
+
+
+def profile_surface_per_m(value: str | None) -> float | None:
+    """Return external/coated section surface [m² per metre], when tabulated."""
+    return _SURFACE_PER_M.get(normalize_designation(value))

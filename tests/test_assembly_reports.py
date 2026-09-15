@@ -53,6 +53,28 @@ def _model(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True); model.write(str(path))
 
 
+def _one_piece_model(path: Path) -> None:
+    model = ifcopenshell.file(schema="IFC4")
+    mm = model.create_entity("IfcSIUnit", UnitType="LENGTHUNIT", Prefix="MILLI", Name="METRE")
+    m2 = model.create_entity("IfcSIUnit", UnitType="AREAUNIT", Name="SQUARE_METRE")
+    m3 = model.create_entity("IfcSIUnit", UnitType="VOLUMEUNIT", Name="CUBIC_METRE")
+    kg = model.create_entity("IfcSIUnit", UnitType="MASSUNIT", Prefix="KILO", Name="GRAM")
+    units = model.create_entity("IfcUnitAssignment", Units=[mm, m2, m3, kg])
+    model.create_entity("IfcProject", GlobalId=ifcopenshell.guid.new(), UnitsInContext=units)
+    for index in range(2):
+        beam = model.create_entity(
+            "IfcBeam", GlobalId=ifcopenshell.guid.new(), Name="Belka jednoczęściowa",
+            Tag=f"A-02-{index}", Representation=_shape(model, "IPE100", 100.0, 10.0, 2000.0),
+        )
+        _property_set(model, beam, [
+            ("ASSEMBLY_POS", "IfcIdentifier", "A-02"),
+            ("PART_POS", "IfcIdentifier", "A-02"),
+            ("PROFILE", "IfcIdentifier", "IPE100"),
+            ("PHASE", "IfcInteger", 10),
+        ])
+    path.parent.mkdir(parents=True, exist_ok=True); model.write(str(path))
+
+
 def test_assembly_parser_and_two_workbooks(tmp_path):
     source = tmp_path / "model.ifc"; _model(source)
     result = IfcAssemblyParser().parse(source, phase=("10",))
@@ -60,11 +82,29 @@ def test_assembly_parser_and_two_workbooks(tmp_path):
     assert result.assemblies[0].mark == "A-01"
     assert result.assemblies[0].shipping_mark == "S-01"
     assert len(result.parts) == 2
-    assert result.assemblies[0].report_mass_kg(7850) == 25.0
+    # The report is reconciled from its physical parts; the rounded assembly
+    # weight remains diagnostic rather than overriding the bill of materials.
+    assert result.assemblies[0].report_mass_kg(7850) == 24.021
     assert result.assemblies[0].surface_area_m2 > 0
 
     structural, shipping = AssemblyExcelGenerator().generate(result, tmp_path)
     assert structural.name == structural_output_filename(source)
     assert shipping.name == shipping_output_filename(source)
-    assert load_workbook(structural).sheetnames == ["ZESPOŁY", "STRUKTURA", "UWAGI"]
-    assert load_workbook(shipping).sheetnames == ["ELEMENTY WYSYŁKOWE", "SKŁAD", "UWAGI"]
+    structural_wb = load_workbook(structural)
+    shipping_wb = load_workbook(shipping)
+    assert structural_wb.sheetnames == ["LISTA STRUKTURALNA", "UWAGI"]
+    assert shipping_wb.sheetnames == ["LISTA WYSYŁKOWA", "UWAGI"]
+    rows = list(structural_wb["LISTA STRUKTURALNA"].iter_rows(min_row=4, values_only=True))
+    assert rows[0][0:3] == ("A-01", 1, "Träger")
+    assert {row[2] for row in rows[1:3]} == {"PL10x100", "IPE100"}
+    shipping_rows = list(shipping_wb["LISTA WYSYŁKOWA"].iter_rows(min_row=4, values_only=True))
+    assert shipping_rows[0][0:3] == ("A-01", 1, "Träger")
+
+
+def test_one_piece_assemblies_are_detected_without_ifcelementassembly(tmp_path):
+    source = tmp_path / "one-piece.ifc"
+    _one_piece_model(source)
+    result = IfcAssemblyParser().parse(source, phase=("10",))
+    assert len(result.assemblies) == 2
+    assert {record.mark for record in result.assemblies} == {"A-02"}
+    assert all(len(record.parts) == 1 for record in result.assemblies)

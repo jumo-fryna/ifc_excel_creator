@@ -15,10 +15,12 @@ Lokalna aplikacja Windows tworząca osobne zestawienie Excel dla każdego modelu
 
 Drugi przycisk **GENERUJ LISTY MONTAŻOWE I WYSYŁKOWE** tworzy dla każdego IFC dwa dodatkowe pliki:
 
-- `<nazwa IFC> lista strukturalna.xlsx` – zespoły montażowe i wszystkie przypisane części,
-- `<nazwa IFC> lista elementów wysyłkowych.xlsx` – elementy wysyłkowe pogrupowane według oznaczenia zespołu/ShippingMark.
+- `<nazwa IFC> lista strukturalna.xlsx` – nagłówek każdego zespołu montażowego, a bezpośrednio pod nim części pogrupowane wg `PART_POS`,
+- `<nazwa IFC> lista elementów wysyłkowych.xlsx` – zbiorcza lista wszystkich zespołów montażowych z ilościami, masami i powierzchniami (bez ponownego wykazywania części).
 
-Obie listy zawierają masę i powierzchnię. Masa zespołu pochodzi z właściwości zespołu IFC, a gdy jej brakuje – z sumy mas części. Powierzchnia jest sumą zewnętrznych powierzchni części.
+Zespoły są wykrywane według `ASSEMBLY_POS`, również wtedy, gdy eksporter nie utworzył
+osobnego obiektu `IfcElementAssembly` dla zespołu jednoczęściowego. Obie listy zawierają
+masę i zewnętrzną powierzchnię części.
 
 ## Arkusze raportu
 
@@ -72,7 +74,7 @@ Gotowy plik znajduje się w `dist\IFC_Steel_List_Generator_vX.Y.Z.exe`. Numer je
 
 - Wynik zależy od ilości i materiałów faktycznie zapisanych przez program eksportujący IFC.
 - Obsługiwane są typowe modele IFC2x3 i IFC4; nietypowe własne właściwości mogą wymagać rozszerzenia aliasów.
-- Zespoły są odczytywane przede wszystkim z `IfcElementAssembly` i `IfcRelAggregates`. Program obsługuje też `ASSEMBLY_POS`, `AssemblyMark`, `Assembly/Cast unit Mark` i `ShippingMark`.
+- Zespoły są grupowane według `ASSEMBLY_POS`/`AssemblyMark`; `IfcElementAssembly` i `IfcRelAggregates` służą do dokładnego odtworzenia ich składu, gdy są dostępne.
 - Gdy eksporter zapisze zespoły bez relacji (spotykane w niektórych eksportach Tekla/MTA), raport stosuje oznaczony mechanizm awaryjny oparty na kolejności bloków STEP i zapisuje ostrzeżenie.
 - Element bez reprezentacji geometrycznej nie jest liczony jako część fizyczna.
 - Faza nie jest zgadywana z nazwy pliku. Program wykrywa wartości `Phase` i pozwala zaznaczyć wiele faz osobno dla każdego pliku przy każdym generowaniu.

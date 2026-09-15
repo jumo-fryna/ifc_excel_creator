@@ -7,7 +7,7 @@ from typing import Callable
 from .assembly_parser import IfcAssemblyParser
 from .models import AssemblyBatchItemResult, BatchItemResult
 from .parser import IfcParser
-from .reporting.assembly_excel_generator import AssemblyExcelGenerator
+from .reporting.assembly_excel_generator import AssemblyExcelGenerator, assembly_report_totals
 from .reporting.excel_generator import ExcelGenerator, output_filename
 
 
@@ -66,9 +66,8 @@ def process_assembly_batch(files: list[str | Path], output_dir: str | Path,
                 status("Generowanie listy strukturalnej i wysyłkowej...")
             structural, shipping = generator.generate(parsed, target, density)
             item.structural_output = structural; item.shipping_output = shipping
-            item.assemblies = len(parsed.assemblies); item.parts = len(parsed.parts)
-            item.mass_kg = sum(record.report_mass_kg(density) for record in parsed.assemblies)
-            item.surface_area_m2 = sum(record.surface_area_m2 for record in parsed.assemblies)
+            item.assemblies, item.mass_kg, item.surface_area_m2 = assembly_report_totals(parsed, density)
+            item.parts = len(parsed.parts)
             item.warnings = parsed.warnings
             if status:
                 status(f"Zapisano {structural.name} oraz {shipping.name}")
