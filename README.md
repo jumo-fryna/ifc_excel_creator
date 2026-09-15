@@ -2,6 +2,13 @@
 
 Lokalna aplikacja Windows tworząca osobne zestawienie Excel dla każdego modelu IFC konstrukcji stalowej. Pliki nie są wysyłane do chmury; analiza odbywa się na komputerze użytkownika.
 
+## Wersja 1.3.1
+
+- poprawiona lista strukturalna: nagłówek zespołu i jego pozycje `PART_POS` w jednym arkuszu,
+- lista wysyłkowa jest zbiorczą listą zespołów montażowych,
+- wykrywanie także jednoczęściowych zespołów zapisanych tylko przez `ASSEMBLY_POS`,
+- masy zespołów są uzgadniane z części, a powierzchnie profili zamkniętych nie obejmują wnętrza.
+
 > Miejsce na zrzut ekranu aplikacji.
 
 ## Najprostsze użycie
