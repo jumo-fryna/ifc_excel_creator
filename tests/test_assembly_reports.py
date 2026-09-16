@@ -101,6 +101,16 @@ def test_assembly_parser_and_two_workbooks(tmp_path):
     assert shipping_rows[0][0:3] == ("A-01", 1, "Träger")
 
 
+def test_assembly_opens_model_once(tmp_path):
+    from unittest.mock import patch
+    source = tmp_path / "single-read.ifc"
+    _model(source)
+    with patch("ifcopenshell.open", wraps=ifcopenshell.open) as opened:
+        result = IfcAssemblyParser().parse(source)
+    assert opened.call_count == 1
+    assert len(result.parts) == 2
+
+
 def test_one_piece_assemblies_are_detected_without_ifcelementassembly(tmp_path):
     source = tmp_path / "one-piece.ifc"
     _one_piece_model(source)

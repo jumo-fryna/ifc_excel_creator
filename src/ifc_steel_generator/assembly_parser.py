@@ -58,13 +58,14 @@ class IfcAssemblyParser:
         source = Path(path)
         if log:
             log(f"Odczyt części i powierzchni: {source.name}...")
-        elements_result = self.element_parser.parse(
-            source, log=log, phase=phase, require_surface=True,
-        )
         try:
             model = ifcopenshell.open(str(source))
         except Exception as exc:
             raise ValueError(f"Nie można otworzyć pliku IFC: {exc}") from exc
+
+        elements_result = self.element_parser.parse(
+            source, log=log, phase=phase, require_surface=True, model=model,
+        )
 
         units = UnitConverter.from_ifc(model)
         result = AssemblyParseResult(source=source, warnings=list(elements_result.warnings))
