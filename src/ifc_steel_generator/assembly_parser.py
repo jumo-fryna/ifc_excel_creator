@@ -41,11 +41,26 @@ def _number(props: dict[str, object], keys: tuple[str, ...]) -> float | None:
     return None
 
 
+class WorkshopElementParser(IfcParser):
+    """Workshop geometry policy isolated from ordinary material reports."""
+
+    def _apply_geometry_fallback(self, element, item, units, settings, geometry=None):
+        if geometry is None:
+            import ifcopenshell.geom
+            shape = ifcopenshell.geom.create_shape(settings, element)
+            geometry = shape.geometry
+        super()._apply_geometry_fallback(element, item, units, settings, geometry)
+        if item.ifc_type == "IfcColumn":
+            import ifcopenshell.util.shape as shape_util
+            dimensions = (shape_util.get_x(geometry), shape_util.get_y(geometry), shape_util.get_z(geometry))
+            item.stock_length_mm = self._profile_geometry_length(geometry, dimensions)
+
+
 class IfcAssemblyParser:
     """Extract assembly membership and shipping-unit summaries from an IFC."""
 
     def __init__(self) -> None:
-        self.element_parser = IfcParser()
+        self.element_parser = WorkshopElementParser()
 
     def parse(self, path: str | Path, density: float = 7850.0,
               log: Callable[[str], None] | None = None,
@@ -58,15 +73,22 @@ class IfcAssemblyParser:
         source = Path(path)
         if log:
             log(f"Odczyt części i powierzchni: {source.name}...")
-        elements_result = self.element_parser.parse(
-            source, log=log, phase=phase, require_surface=True,
-        )
         try:
             model = ifcopenshell.open(str(source))
         except Exception as exc:
             raise ValueError(f"Nie można otworzyć pliku IFC: {exc}") from exc
 
+        elements_result = self.element_parser.parse(
+            source, log=log, phase=phase, require_surface=True, model=model,
+        )
+
         units = UnitConverter.from_ifc(model)
+        # Only workshop reports use this additional nominal section entry.
+        for item in elements_result.profiles:
+            if item.unit_weight_kg_m is None and item.designation.upper().replace(" ", "").replace("X", "*") in {"L200*16", "L200*200*16"}:
+                # Nominal area 61.8 cm²; catalogue mass 48.5 kg/m rounded.
+                # https://www.rainhamsteel.co.uk/products/equal-angles
+                item.unit_weight_kg_m = 61.8 * 0.785
         result = AssemblyParseResult(source=source, warnings=list(elements_result.warnings))
         selected = self.element_parser._selected_phases(phase)
         assemblies = list(model.by_type("IfcElementAssembly"))
@@ -199,21 +221,23 @@ class IfcAssemblyParser:
                 ]
                 record.length_mm = max(lengths, default=None)
         result.assemblies = sorted(records.values(), key=lambda value: (value.mark, value.ifc_id))
-        missing_surface = sum(part.element.outer_surface_area_m2 is None for part in result.parts)
-        missing_mass = sum(part.element.mass_kg(density) is None for part in result.parts)
         unassigned = len(steel_elements) - len(assigned)
+        result.unassigned_elements = [item for eid, item in steel_elements.items() if eid not in assigned]
+        report_elements = [part.element for part in result.parts] + result.unassigned_elements
+        missing_surface = sum(item.fabrication_surface_m2() is None for item in report_elements)
+        missing_mass = sum(item.fabrication_mass_kg(density) is None for item in report_elements)
         empty_assemblies = sum(not record.parts for record in result.assemblies)
         if unassigned:
-            result.warnings.append(f"Nie przypisano do zespołów {unassigned} elementów fizycznych.")
+            result.warnings.append(f"{unassigned} elementów bez przypisania do zespołu ujęto osobno w masie i powierzchni całkowitej. Numery zespołów nie są zgadywane.")
         if empty_assemblies:
             result.warnings.append(
                 f"{empty_assemblies} zespołów nie ma przypisanych stalowych części; "
                 "mogą zawierać wyłącznie łączniki albo pochodzić z niepełnego eksportu."
             )
         if missing_mass:
-            result.warnings.append(f"Brak masy dla {missing_mass} części zespołów.")
+            result.warnings.append(f"Brak masy dla {missing_mass} elementów raportu — suma jest niepełna.")
         if missing_surface:
-            result.warnings.append(f"Brak powierzchni dla {missing_surface} części zespołów.")
+            result.warnings.append(f"Brak powierzchni dla {missing_surface} elementów raportu — suma jest niepełna.")
         if implicit_count:
             result.warnings.append(
                 f"Zespoły jednoczęściowe wykryte z ASSEMBLY_POS/PART_POS: {implicit_count}."

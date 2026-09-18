@@ -101,6 +101,16 @@ def test_assembly_parser_and_two_workbooks(tmp_path):
     assert shipping_rows[0][0:3] == ("A-01", 1, "Träger")
 
 
+def test_assembly_opens_model_once(tmp_path):
+    from unittest.mock import patch
+    source = tmp_path / "single-read.ifc"
+    _model(source)
+    with patch("ifcopenshell.open", wraps=ifcopenshell.open) as opened:
+        result = IfcAssemblyParser().parse(source)
+    assert opened.call_count == 1
+    assert len(result.parts) == 2
+
+
 def test_one_piece_assemblies_are_detected_without_ifcelementassembly(tmp_path):
     source = tmp_path / "one-piece.ifc"
     _one_piece_model(source)
@@ -108,3 +118,47 @@ def test_one_piece_assemblies_are_detected_without_ifcelementassembly(tmp_path):
     assert len(result.assemblies) == 2
     assert {record.mark for record in result.assemblies} == {"A-02"}
     assert all(len(record.parts) == 1 for record in result.assemblies)
+
+
+def test_unassigned_parts_are_in_both_report_totals_without_invented_assemblies(tmp_path):
+    import pytest
+    from ifc_steel_generator.reporting.assembly_excel_generator import assembly_report_totals
+    source = tmp_path / "unassigned.ifc"
+    _one_piece_model(source)
+    model = ifcopenshell.open(str(source))
+    for relation in model.by_type("IfcRelDefinesByProperties"):
+        model.remove(relation)
+    model.write(str(source))
+    result = IfcAssemblyParser().parse(source)
+    assert len(result.assemblies) == 0
+    assert len(result.unassigned_elements) == 2
+    count, mass, surface = assembly_report_totals(result, 7850)
+    assert count == 0
+    assert mass == pytest.approx(2 * 2 * 8.0855)
+    assert surface > 0
+    for path in AssemblyExcelGenerator().generate(result, tmp_path):
+        rows = list(load_workbook(path, data_only=True).worksheets[0].values)
+        total = next(r for r in rows if r[0] == "RAZEM")
+        assert total[6] == pytest.approx(mass)
+        assert sum(str(r[0]).startswith(("IFC-", "BRAK ZESPOŁU / IFC-")) for r in rows) == 2
+
+
+def test_workshop_column_correction_does_not_change_material_parser(tmp_path):
+    import pytest
+    from unittest.mock import patch
+    from types import SimpleNamespace
+    from array import array
+    from ifc_steel_generator.models import SteelElement, ElementKind
+    from ifc_steel_generator.assembly_parser import WorkshopElementParser
+    from ifc_steel_generator.units import UnitConverter
+    item = SteelElement(9999, "IfcColumn", ElementKind.PROFILE,
+                        designation="HEA200", length_mm=690.15,
+                        stock_length_mm=690.15, unit_weight_kg_m=42.233)
+    material_mass = item.mass_kg(7850)
+    vertices = [v for x in (0., .2) for y in (0., .2) for z in (0., .66015) for v in (x,y,z)]
+    geometry = SimpleNamespace(verts=vertices, verts_buffer=array('d', vertices).tobytes(), faces=[])
+    with patch("ifc_steel_generator.parser.IfcParser._apply_geometry_fallback"):
+        WorkshopElementParser()._apply_geometry_fallback(None, item, UnitConverter(), None, geometry)
+    assert item.fabrication_length_mm == pytest.approx(660.15)
+    assert item.mass_kg(7850) == material_mass
+    assert item.fabrication_mass_kg(7850) == pytest.approx(42.233 * .66015)

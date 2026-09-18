@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QDial
     QProgressBar, QPushButton, QVBoxLayout, QWidget)
 
 from .batch import process_assembly_batch, process_batch
+from . import __version__
 
 
 class WorkerSignals(QObject):
@@ -33,6 +34,36 @@ class BatchWorker(QRunnable):
             process = process_assembly_batch if self.mode == "assemblies" else process_batch
             value=process(self.files,self.output,self.density,self.signals.message.emit,self.signals.progress.emit,self.phases)
             self.signals.finished.emit(value)
+        except Exception as exc:
+            self.signals.fatal.emit(str(exc))
+
+
+class PhaseScanWorker(QRunnable):
+    """Read one model at a time without blocking the GUI event loop."""
+
+    def __init__(self, files: list[str], cache=None):
+        super().__init__()
+        self.files = files
+        self.cache = cache if cache is not None else {}
+        self.signals = WorkerSignals()
+
+    def run(self):
+        from .parser import IfcParser
+        try:
+            parser = IfcParser()
+            detected = {}
+            for index, path in enumerate(self.files):
+                self.signals.message.emit(f"Odczyt faz {index + 1}/{len(self.files)}: {Path(path).name}...")
+                stat = Path(path).stat()
+                signature = (stat.st_size, stat.st_mtime_ns)
+                previous = self.cache.get(path)
+                if previous is not None and previous[0] == signature:
+                    detected[path] = list(previous[1])
+                else:
+                    detected[path] = parser.detect_phases(path)
+                    self.cache[path] = (signature, tuple(detected[path]))
+                self.signals.progress.emit(index + 1, len(self.files))
+            self.signals.finished.emit(detected)
         except Exception as exc:
             self.signals.fatal.emit(str(exc))
 
@@ -115,7 +146,8 @@ class PhaseSelectionDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__(); self.settings=QSettings("Jumo", "IFC Steel List Generator")
-        self.pool=QThreadPool.globalInstance(); self.setWindowTitle("IFC Steel List Generator")
+        self._phase_cache = {}
+        self.pool=QThreadPool.globalInstance(); self.setWindowTitle(f"IFC Steel List Generator v{__version__}")
         self.resize(self.settings.value("size", self.size()))
         root=QWidget(); layout=QVBoxLayout(root); self.setCentralWidget(root)
         title=QLabel("IFC Steel List Generator"); title.setStyleSheet("font-size:24px;font-weight:bold;color:#17365d")
@@ -163,25 +195,52 @@ class MainWindow(QMainWindow):
         self._start("assemblies")
 
     def _start(self, mode: str):
+        if not self.generate.isEnabled():
+            return
         files=[self.files.item(i).text() for i in range(self.files.count())]
         if not files: QMessageBox.warning(self,"Brak plików","Dodaj co najmniej jeden plik IFC."); return
         if not Path(self.output.text()).is_dir(): QMessageBox.warning(self,"Błędny folder","Wybierz istniejący folder wynikowy."); return
-        phases = self.choose_phases(files)
+        self.generate.setEnabled(False); self.generate_assemblies.setEnabled(False)
+        self.files.setEnabled(False)
+        self.progress.setRange(0, len(files)); self.progress.setValue(0)
+        self._pending_job = (files, mode, self.output.text(), self.density.value())
+        # Cache only phase names, never entire IFC models or geometry.
+        self._phase_cache = {key: value for key, value in self._phase_cache.items() if key in files}
+        worker = PhaseScanWorker(files, self._phase_cache)
+        self._worker = worker
+        worker.signals.message.connect(self.append_log)
+        worker.signals.progress.connect(self.update_progress)
+        worker.signals.finished.connect(self._phases_ready)
+        worker.signals.fatal.connect(self.failed)
+        self.pool.start(worker)
+
+    def _phases_ready(self, detected):
+        files, mode, output, density = self._pending_job
+        phases = self.choose_phases(files, detected)
         if phases is None:
+            self.generate.setEnabled(True); self.generate_assemblies.setEnabled(True)
+            self.files.setEnabled(True)
+            self.progress.setRange(0, 1); self.progress.setValue(0)
+            self.stage.setText("Anulowano")
             return
         self.generate.setEnabled(False); self.generate_assemblies.setEnabled(False); self.progress.setRange(0,0); self.settings.setValue("density",self.density.value())
         self.progress.setRange(0,len(files)); self.progress.setValue(0)
-        worker=BatchWorker(files,self.output.text(),self.density.value(),phases,mode); worker.signals.message.connect(self.append_log); worker.signals.progress.connect(self.update_progress); worker.signals.finished.connect(lambda results, selected=mode: self.done(results, selected)); worker.signals.fatal.connect(self.failed); self.pool.start(worker)
+        self._active_mode = mode
+        worker=BatchWorker(files,output,density,phases,mode)
+        self._worker = worker
+        worker.signals.message.connect(self.append_log)
+        worker.signals.progress.connect(self.update_progress)
+        worker.signals.finished.connect(self._batch_ready)
+        worker.signals.fatal.connect(self.failed)
+        self.pool.start(worker)
 
-    def choose_phases(self, files: list[str]) -> dict[str, tuple[str, ...] | None] | None:
-        from .parser import IfcParser
-        parser = IfcParser(); selections: dict[str, tuple[str, ...] | None] = {}
+    def _batch_ready(self, results):
+        self.done(results, self._active_mode)
+
+    def choose_phases(self, files: list[str], phases_by_file: dict[str, list[str]]) -> dict[str, tuple[str, ...] | None] | None:
+        selections: dict[str, tuple[str, ...] | None] = {}
         for file in files:
-            try:
-                detected = parser.detect_phases(file)
-            except Exception as exc:
-                QMessageBox.critical(self, "Błąd odczytu faz", f"{Path(file).name}\n{exc}")
-                return None
+            detected = phases_by_file[file]
             if not detected:
                 selections[file] = None
                 continue
@@ -196,6 +255,7 @@ class MainWindow(QMainWindow):
         self.progress.setRange(0,total); self.progress.setValue(value)
 
     def done(self,results,mode="steel"):
+        self.files.setEnabled(True)
         self.generate.setEnabled(True); self.generate_assemblies.setEnabled(True); self.progress.setRange(0,1); self.progress.setValue(1)
         good=sum(r.error is None for r in results); errors=len(results)-good; warnings=sum(len(r.warnings) for r in results)
         if mode == "assemblies":
@@ -208,6 +268,7 @@ class MainWindow(QMainWindow):
         if self.open_folder.isChecked(): QDesktopServices.openUrl(QUrl.fromLocalFile(self.output.text()))
 
     def failed(self,message: str):
+        self.files.setEnabled(True)
         self.generate.setEnabled(True); self.generate_assemblies.setEnabled(True); self.progress.setRange(0,1); self.append_log(message); QMessageBox.critical(self,"Błąd",message)
 
     def closeEvent(self,event):

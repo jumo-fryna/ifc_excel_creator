@@ -38,14 +38,15 @@ class IfcParser:
 
     def parse(self, path: str | Path, log: Callable[[str], None] | None = None,
               phase: str | Collection[str] | None = None,
-              require_surface: bool = False) -> ParseResult:
+              require_surface: bool = False, *, model=None) -> ParseResult:
         try:
             import ifcopenshell
         except ImportError as exc:
             raise RuntimeError("Brak biblioteki IfcOpenShell. Zainstaluj wymagania programu.") from exc
         source = Path(path)
         try:
-            model = ifcopenshell.open(str(source))
+            if model is None:
+                model = ifcopenshell.open(str(source))
         except Exception as exc:
             raise ValueError(f"Nie można otworzyć pliku IFC: {exc}") from exc
         converter = UnitConverter.from_ifc(model)

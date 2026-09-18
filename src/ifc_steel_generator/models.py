@@ -145,6 +145,7 @@ class AssemblyParseResult:
     source: Path
     assemblies: list[AssemblyRecord] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    unassigned_elements: list[SteelElement] = field(default_factory=list)
 
     @property
     def parts(self) -> list[AssemblyPart]:
