@@ -112,6 +112,8 @@ class AssemblyGroup:
 def assembly_groups(result: AssemblyParseResult) -> list[AssemblyGroup]:
     grouped: dict[tuple[str, str], list[AssemblyRecord]] = defaultdict(list)
     for record in result.assemblies:
+        if not record.parts:
+            continue
         grouped[(record.mark, record.phase)].append(record)
     return sorted(
         (AssemblyGroup(mark, phase, records) for (mark, phase), records in grouped.items()),
@@ -123,8 +125,10 @@ def assembly_report_totals(result: AssemblyParseResult, density: float) -> tuple
     groups = assembly_groups(result)
     return (
         sum(group.quantity for group in groups),
-        sum(group.unit_mass(density) * group.quantity for group in groups),
-        sum(group.unit_surface() * group.quantity for group in groups),
+        sum(group.unit_mass(density) * group.quantity for group in groups)
+        + sum(item.fabrication_mass_kg(density) or 0.0 for item in result.unassigned_elements),
+        sum(group.unit_surface() * group.quantity for group in groups)
+        + sum(item.fabrication_surface_m2() or 0.0 for item in result.unassigned_elements),
     )
 
 
@@ -171,6 +175,7 @@ class AssemblyExcelGenerator:
                     unit_part_mass, unit_part_mass * line.quantity,
                     line.unit_surface * line.quantity, element.name,
                 ])
+        self._unassigned_rows(ws, result, density, structural=True)
         _, total_mass, total_surface = assembly_report_totals(result, density)
         ws.append(["RAZEM", "", "", "", "", "", total_mass, total_surface, ""])
         style_total(ws[ws.max_row])
@@ -200,13 +205,32 @@ class AssemblyExcelGenerator:
                 unit_mass, unit_mass * group.quantity,
                 unit_surface, unit_surface * group.quantity,
             ])
+        self._unassigned_rows(ws, result, density, structural=False)
         quantity, total_mass, total_surface = assembly_report_totals(result, density)
-        ws.append(["RAZEM", quantity, "", "", "", "", total_mass, "", total_surface])
+        ws.append(["RAZEM", quantity if not result.unassigned_elements else "", "", "", "", "", total_mass, "", total_surface])
         style_total(ws[ws.max_row])
         ws.freeze_panes = "A4"
         ws.auto_filter.ref = f"A3:I{max(3, ws.max_row - 1)}"
         self._notes(wb["UWAGI"], result, density, structural=False)
         self._finish(wb, target)
+
+    @staticmethod
+    def _unassigned_rows(ws, result, density, structural):
+        if not result.unassigned_elements:
+            return
+        ws.append(["ELEMENTY BEZ PRZYPISANEGO ZESPOŁU — UJĘTE W SUMIE"])
+        ws[ws.max_row][0].fill = NOTE_FILL
+        for item in result.unassigned_elements:
+            mass = item.fabrication_mass_kg(density)
+            surface = item.fabrication_surface_m2()
+            if structural:
+                ws.append([f"IFC-{item.ifc_id}", 1, item.designation, item.material,
+                           item.fabrication_length_mm, mass, mass, surface,
+                           f"{item.name}; brak przypisania zespołu"])
+            else:
+                ws.append([f"BRAK ZESPOŁU / IFC-{item.ifc_id}", 1,
+                           f"{item.designation} {item.name}", item.phase,
+                           item.fabrication_length_mm, mass, mass, surface, surface])
 
     @staticmethod
     def _workbook(names: tuple[str, ...]) -> Workbook:
@@ -225,6 +249,7 @@ class AssemblyExcelGenerator:
             ("Gęstość [kg/m³]", density),
             ("Pozycje zespołów", len(assembly_groups(result))),
             ("Fizyczne zespoły", quantity),
+            ("Elementy nieprzypisane (ujęte w sumach masy i powierzchni)", len(result.unassigned_elements)),
             ("Masa łączna [kg]", total_mass),
             ("Powierzchnia łączna [m²]", total_surface),
             ("Reguła struktury", "zespół wg ASSEMBLY_POS; części wg PART_POS"),
